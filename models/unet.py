@@ -525,21 +525,3 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         model_3d.load_state_dict(model_3d_old_state_dict)
 
         return model_3d
-    
-    @classmethod
-    def from_pretrained_3d_temp(cls, pretrained_model_path, subfolder=None):
-        if subfolder is not None:
-            pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
-
-        model_3d = UNet3DConditionModel()
-
-        model_3d_old = os.path.join(pretrained_model_path, WEIGHTS_NAME)
-        model_3d_old_state_dict = torch.load(model_3d_old, map_location="cpu")
-
-        for k, v in model_3d.state_dict().items():
-            if 'conditioning_temp' in k:
-                model_3d_old_state_dict.update({k: v})
-
-        model_3d.load_state_dict(model_3d_old_state_dict)
-
-        return model_3d
