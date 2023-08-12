@@ -1,14 +1,14 @@
 # Pretrained 2d diffusers model path.
-pretrained_2d_model_path: "/home/polyware/stable-diffusion-xl-base-1.0"
+pretrained_2d_model_path: "stabilityai/stable-diffusion-xl-base-1.0"
 
 # Pretrained 3d diffusers model path.
-pretrained_3d_model_path: "/home/polyware/modeltune-light/outputs/test-4/train_2023-08-12T05-28-59"
+pretrained_3d_model_path: "damo-vilab/text-to-video-ms-1.7b"
 
 # Upgrade base modelscope model to new img2vid model
-upgrade_model: False
+upgrade_model: True
 
 # The folder where your training outputs will be placed
-output_dir: "outputs/test-5"
+output_dir: "outputs/conditioning"
 
 # Adds offset noise to training. Sese https://www.crosslabs.org/blog/diffusion-with-offset-noise
 offset_noise_strength: 0.1
