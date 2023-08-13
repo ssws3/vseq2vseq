@@ -5,10 +5,10 @@ pretrained_2d_model_path: "stabilityai/stable-diffusion-xl-base-1.0"
 pretrained_3d_model_path: "damo-vilab/text-to-video-ms-1.7b"
 
 # Upgrade base modelscope model to new img2vid model
-upgrade_model: True
+upgrade_model: False
 
 # The folder where your training outputs will be placed
-output_dir: "outputs/conditioning"
+output_dir: "outputs/modelscope-seq2seq-test-3"
 
 # Adds offset noise to training. Sese https://www.crosslabs.org/blog/diffusion-with-offset-noise
 offset_noise_strength: 0.1
@@ -28,23 +28,28 @@ train_data:
   frame_step: 4
 
   # The total number of frames to sample, included the ones for the conditioning
-  n_sample_frames: 16
+  n_sample_frames: 8
 
   # The minimum amount of conditioning frames to fetch from n_sample_frames
   min_conditioning_n_sample_frames: 1
 
   # The maximum amount of conditioning frames to fetch from n_sample_frames
-  max_conditioning_n_sample_frames: 8
+  max_conditioning_n_sample_frames: 4
+
+  # Should train only spatial_conv and .attentions layers
+  train_only_images: False
 
   trainable_modules:
   - "conditioning_conv"
   - "conditioning_attentions"
-  - "transformer_in"
-  - "temp_attentions"
-  - "temp_convs"
+  #- "transformer_in"
+  #- "temp_attentions"
+  #- "temp_convs"
+  #- "spatial_conv"
+  #- ".attentions"
   
   # Folder containing all videos (prompt should be the file name, _ are automatically replaced to space characters) (sub folders are checked as well)
-  path: "/home/polyware/dvideo/" # /home/polyware/Video-BLIP2-Preprocessor/outputs/hd #/home/polyware/modeltune/target_folder
+  path: "/home/polyware/webvid" # /home/polyware/Video-BLIP2-Preprocessor/outputs/hd #/home/polyware/modeltune/target_folder
   
   # Path to the deepspeed config file
   deepspeed_config_file: "deepspeed/stage-2.json"
@@ -78,7 +83,7 @@ sample_data:
 epochs: 1
 
 # How many steps to do before validating
-train_dataset_size: 0.98 # 99% for training data, 1% for validation data. Modify this according to how big your train dataset is
+train_dataset_size: 0.99 # 99% for training data, 1% for validation data. Modify this according to how big your train dataset is
 
 # How many steps to do before validating
 validation_steps: 100
@@ -86,14 +91,14 @@ validation_steps: 100
 # Save only the unet with lowest validation loss
 save_only_best: True
 
-# If save_only_best is False, this will save the model every checkpointing_steps steps
-checkpointing_steps: 50
+# Save a checkpoint every x steps
+checkpointing_steps: 500
 
 # How many steps to do before sampling a preview
 sample_steps: 10
 
 # Seed for training.
-seed: 1
+seed: 42
 
 # Resume from checkpoint
 resume_from_checkpoint: False
