@@ -23,7 +23,7 @@ from typing import Dict
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
 from einops import rearrange
-from utils.dataset import VideoFolderDataset
+from utils.dataset import VideoFolderDataset, ImageFolderDataset
 from torch.cuda.amp import autocast
 from torch.utils.data.distributed import DistributedSampler
 from torch.utils.data import random_split
@@ -47,18 +47,6 @@ def save_image(tensor, filename):
     tensor = (tensor * 255).astype('uint8')  # Denormalize
     img = Image.fromarray(tensor)  # Convert to a PIL image
     img.save(filename)  # Save image
-
-def handle_temporal_params(model, is_enabled=True):
-    unfrozen_params = 0
-
-    for name, module in model.named_modules():
-        if 'attn1' in name:
-            for m in module.parameters():
-                m.requires_grad_(is_enabled)
-                if is_enabled: unfrozen_params +=1        
-
-    if unfrozen_params > 0:
-        print(f"{unfrozen_params} params have been unfrozen for training.")
 
 def set_processors(attentions):
     for attn in attentions: attn.set_processor(AttnProcessor2_0()) 
@@ -108,34 +96,14 @@ def handle_trainable_modules(model, trainable_modules=None, is_enabled=True):
         for name, module in model.named_modules():
             for tm in tuple(trainable_modules):
                 if tm == 'all':
-                    handle_all_params(model, is_enabled=True)
+                    model.requires_grad_(is_enabled)
+                    unfrozen_params = len(list(model.parameters()))
                     break
                     
                 if tm in name:
                     for m in module.parameters():
                         m.requires_grad_(is_enabled)
                         if is_enabled: unfrozen_params +=1
-        
-        for name, module in model.named_modules():
-            for param in module.parameters():
-                try:
-                    with open("status.txt", 'a') as file:
-                        file.write(f"{name} {param.requires_grad}\n")
-                except:
-                    pass
-        
-
-    if unfrozen_params > 0:
-        print(f"{unfrozen_params} params have been unfrozen for training.")
-
-def handle_all_params(model, is_enabled=True):
-    unfrozen_params = 0
-
-    for name, module in model.named_modules():
-        if isinstance(module, (torch.nn.Conv2d, torch.nn.Conv3d, torch.nn.Linear)):
-            for m in module.parameters():
-                m.requires_grad_(is_enabled)
-                if is_enabled: unfrozen_params += 1
 
     if unfrozen_params > 0:
         print(f"{unfrozen_params} params have been unfrozen for training.")
@@ -232,10 +200,10 @@ def should_save(global_step, checkpointing_steps):
     return global_step % checkpointing_steps == 0
 
 def should_validate(global_step, validation_steps):
-    return (global_step % validation_steps == 0 or global_step == 1)
+    return global_step % validation_steps == 0
 
 def should_sample(global_step, sample_steps):
-    return (global_step % sample_steps == 0 or global_step == 1)
+    return global_step % sample_steps == 0
 
 def save_pipe(
         path, 
@@ -351,7 +319,14 @@ def main(
 
     vae.enable_slicing()
 
-    train_dataset = VideoFolderDataset(**train_data, tokenizer=tokenizer, device=unet_engine.device)
+    if train_data.train_only_images:
+        train_data.n_sample_frames = 1
+        train_data.min_conditioning_n_sample_frames = 0
+        train_data.max_conditioning_n_sample_frames = 0
+        
+        train_dataset = ImageFolderDataset(**train_data, tokenizer=tokenizer, device=unet_engine.device)
+    else:
+        train_dataset = VideoFolderDataset(**train_data, tokenizer=tokenizer, device=unet_engine.device)
 
     # Assuming train_dataset is already defined as you provided
     train_size = int(train_dataset_size * len(train_dataset))
@@ -400,8 +375,11 @@ def main(
 
         random_slice = random.randint(train_data.min_conditioning_n_sample_frames, train_data.max_conditioning_n_sample_frames)
         
-        conditioning_hidden_states = latents[:, :, :random_slice, :, :]
-        latents = latents[:, :, random_slice:, :, :]
+        if random_slice > 0:
+            conditioning_hidden_states = latents[:, :, :random_slice, :, :]
+            latents = latents[:, :, random_slice:, :, :]
+        else:
+            conditioning_hidden_states = torch.randn(latents.shape, dtype=torch.half).to(unet_engine.device)
 
         noise = sample_noise(latents, offset_noise_strength, use_offset_noise)
         bsz = latents.shape[0]
@@ -445,20 +423,19 @@ def main(
                 progress_bar.update(1)
                 global_step += 1
 
-                if not save_only_best:
-                    if should_save(global_step, checkpointing_steps):
-                        save_pipe(
-                                pretrained_3d_model_path,
-                                global_step,
-                                unet,
-                                vae,
-                                text_encoder,
-                                tokenizer,
-                                noise_scheduler,
-                                output_dir,
-                                is_checkpoint=True,
-                                remove_older_checkpoints=False
-                            )
+                if should_save(global_step, checkpointing_steps):
+                    save_pipe(
+                            pretrained_3d_model_path,
+                            global_step,
+                            unet,
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            noise_scheduler,
+                            output_dir,
+                            is_checkpoint=True,
+                            remove_older_checkpoints=False
+                        )
                         
                 if should_sample(global_step, sample_steps):
                     if gradient_checkpointing:
