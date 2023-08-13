@@ -260,10 +260,10 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 return custom_forward
             
             hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(self.resnets[0]), hidden_states, conditioning_hidden_states, temb, num_frames)
-            hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(self.temp_convs[0]), hidden_states, num_frames)
+            hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(self.temp_convs[0]), hidden_states, num_frames) if num_frames > 1 else hidden_states
         else:
             hidden_states, conditioning_hidden_states = self.resnets[0](hidden_states, conditioning_hidden_states, temb, num_frames)
-            hidden_states = self.temp_convs[0](hidden_states, num_frames)
+            hidden_states = self.temp_convs[0](hidden_states, num_frames) if num_frames > 1 else hidden_states
             
         for attn, temp_attn, cond_attn, resnet, temp_conv in zip(
             self.attentions, self.temp_attentions, self.conditioning_attentions, self.resnets[1:], self.temp_convs[1:]
@@ -279,16 +279,16 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     return custom_forward
                 
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0]
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0]
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames)
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
             else:
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states,cross_attention_kwargs=cross_attention_kwargs,).sample
-                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample
-                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample
+                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
-                hidden_states = temp_conv(hidden_states)                    
+                hidden_states = temp_conv(hidden_states) if num_frames > 1 else hidden_states    
 
         return hidden_states, conditioning_hidden_states
 
@@ -430,16 +430,16 @@ class CrossAttnDownBlock3D(nn.Module):
                     return custom_forward
                 
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames)
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0]
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0]
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
             else:
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
-                hidden_states = temp_conv(hidden_states, num_frames=num_frames)
+                hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs,).sample
-                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample
-                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample
+                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
 
             output_states += (hidden_states,)
             image_output_states += (conditioning_hidden_states,)
@@ -528,10 +528,10 @@ class DownBlock3D(nn.Module):
                     return custom_forward
 
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames)
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
             else:
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
-                hidden_states = temp_conv(hidden_states, num_frames=num_frames)                    
+                hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states                  
 
             output_states += (hidden_states,)
             image_output_states += (conditioning_hidden_states,)
@@ -689,16 +689,16 @@ class CrossAttnUpBlock3D(nn.Module):
                     return custom_forward
                 
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames)
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0]
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0]
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
             else:
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
-                hidden_states = temp_conv(hidden_states, num_frames=num_frames)
+                hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs,).sample
-                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample
-                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample
+                hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
@@ -792,10 +792,10 @@ class UpBlock3D(nn.Module):
                     return custom_forward
 
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames)
+                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
             else:
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
-                hidden_states = temp_conv(hidden_states, num_frames=num_frames)
+                hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
