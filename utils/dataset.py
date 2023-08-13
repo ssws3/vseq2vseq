@@ -69,6 +69,7 @@ class VideoFolderDataset(Dataset):
         n_sample_frames: int = 16,
         frame_step: int = 4,
         path: str = "./data",
+        text_file_as_prompt: bool = False,
         fallback_prompt: str = "",
         use_bucketing: bool = False,
         **kwargs
@@ -86,6 +87,8 @@ class VideoFolderDataset(Dataset):
 
         self.n_sample_frames = n_sample_frames
         self.frame_step = frame_step
+
+        self.text_file_as_prompt = text_file_as_prompt
     
     def find_videos(self, path):
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -191,6 +194,7 @@ class ImageFolderDataset(Dataset):
                 height: int = 768,
                 n_sample_frames: int = 16,
                 frame_step: int = 4,
+                text_file_as_prompt: bool = False,
                 path: str = "./data",
                 fallback_prompt: str = "",
                 use_bucketing: bool = False,
@@ -203,6 +207,7 @@ class ImageFolderDataset(Dataset):
         self.width = width
         self.height = height
         self.resize = T.Resize((self.height, self.width))
+        self.text_file_as_prompt = text_file_as_prompt
 
     def process_file(self, args):
         file, root = args
@@ -257,12 +262,17 @@ class ImageFolderDataset(Dataset):
         image = rearrange(image, "c h w -> () c h w") # Add extra dimensions to match 'c f h w' format
 
         basename = os.path.basename(img_path).split('.')[0].replace('_', ' ')
-        split_basename = basename.split('-')
 
-        if len(split_basename) > 1:
-            prompt = '-'.join(split_basename[:-1])
+        if self.text_file_as_prompt:
+            with open(os.path.splitext(img_path)[0] + ".txt", 'r') as file:
+                prompt = file.readline().strip()
         else:
-            prompt = split_basename[0]
+            split_basename = basename.split('-')
+
+            if len(split_basename) > 1:
+                prompt = '-'.join(split_basename[:-1])
+            else:
+                prompt = split_basename[0]
 
         if not prompt:
             prompt = self.fallback_prompt
