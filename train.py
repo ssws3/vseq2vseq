@@ -397,6 +397,8 @@ def main(
             target = noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
             raise ValueError(f"Unknown prediction type {noise_scheduler.prediction_type}")
+
+        conditioning_hidden_states.requires_grad = True
         
         model_pred = unet(noisy_latents, conditioning_hidden_states, timesteps, encoder_hidden_states=encoder_hidden_states).sample
         loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
