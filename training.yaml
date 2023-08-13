@@ -39,6 +39,9 @@ train_data:
   # Should train only spatial_conv and .attentions layers
   train_only_images: False
 
+  # If false file name will be the prompt, else the txt file
+  text_file_as_prompt: False
+
   trainable_modules:
   - "conditioning_conv"
   - "conditioning_attentions"
