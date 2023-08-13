@@ -328,7 +328,6 @@ def main(
     else:
         train_dataset = VideoFolderDataset(**train_data, tokenizer=tokenizer, device=unet_engine.device)
 
-    # Assuming train_dataset is already defined as you provided
     train_size = int(train_dataset_size * len(train_dataset))
     val_size = len(train_dataset) - train_size
 
@@ -345,7 +344,7 @@ def main(
 
     val_dataloader = torch.utils.data.DataLoader(
         val_dataset,
-        batch_size=data['train_micro_batch_size_per_gpu'], # You might want to adjust this for validation
+        batch_size=data['train_micro_batch_size_per_gpu'],
         sampler=val_sampler
     )
 
