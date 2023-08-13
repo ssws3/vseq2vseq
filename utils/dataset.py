@@ -6,6 +6,7 @@ import torchvision.transforms as T
 import cv2
 import concurrent.futures
 
+from PIL import Image
 from torch.utils.data import Dataset
 from einops import rearrange
 from tqdm import tqdm
@@ -182,3 +183,90 @@ class VideoFolderDataset(Dataset):
         prompt_ids = self.get_prompt_ids(prompt)
 
         return {"pixel_values": (video[0] / 127.5 - 1.0), "prompt_ids": prompt_ids[0], "text_prompt": prompt, "file": basename, 'dataset': self.__getname__()}
+    
+class ImageFolderDataset(Dataset):
+    def __init__(self, 
+                tokenizer=None,
+                width: int = 768,
+                height: int = 768,
+                n_sample_frames: int = 16,
+                frame_step: int = 4,
+                path: str = "./data",
+                fallback_prompt: str = "",
+                use_bucketing: bool = False,
+                **kwargs
+                ):
+        self.tokenizer = tokenizer
+        self.fallback_prompt = fallback_prompt
+        self.image_files = []
+        self.find_images(path)
+        self.width = width
+        self.height = height
+        self.resize = T.Resize((self.height, self.width))
+
+    def process_file(self, args):
+        file, root = args
+        if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+            full_file_path = os.path.join(root, file)
+            return full_file_path
+        return None
+
+    def center_crop(self, img, crop_size):
+        w, h = img.size
+        start_x = w//2-(crop_size//2)
+        start_y = h//2-(crop_size//2)
+        return img.crop((start_x, start_y, start_x+crop_size, start_y+crop_size))
+
+    def find_images(self, path):
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            jobs = []
+            for root, dirs, files in os.walk(path):
+                for file in files:
+                    jobs.append(executor.submit(self.process_file, (file, root)))
+            # Collect all files first
+            for future in concurrent.futures.as_completed(jobs):
+                result = future.result()
+                if result is not None:
+                    self.image_files.append(result)
+
+    def get_prompt_ids(self, prompt):
+        return self.tokenizer(
+            prompt,
+            truncation=True,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            return_tensors="pt",
+        ).input_ids
+
+    @staticmethod
+    def __getname__(): return 'folder'
+
+    def __len__(self):
+        return len(self.image_files)
+
+    def __getitem__(self, index):
+        try:
+            img_path = self.image_files[index]
+            image = Image.open(img_path).convert('RGB')
+        except:
+            return self.__getitem__((index + 1) % len(self))
+        
+        image = self.center_crop(image, min(image.size))
+        image = self.resize(image)
+        image = T.ToTensor()(image) # Convert PIL Image to PyTorch tensor
+        image = rearrange(image, "c h w -> () c h w") # Add extra dimensions to match 'c f h w' format
+
+        basename = os.path.basename(img_path).split('.')[0].replace('_', ' ')
+        split_basename = basename.split('-')
+
+        if len(split_basename) > 1:
+            prompt = '-'.join(split_basename[:-1])
+        else:
+            prompt = split_basename[0]
+
+        if not prompt:
+            prompt = self.fallback_prompt
+
+        prompt_ids = self.get_prompt_ids(prompt)
+
+        return {"pixel_values": (image / 127.5 - 1.0), "prompt_ids": prompt_ids[0], "text_prompt": prompt, "file": basename, 'dataset': self.__getname__()}
