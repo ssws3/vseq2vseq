@@ -398,6 +398,7 @@ def main(
         else:
             raise ValueError(f"Unknown prediction type {noise_scheduler.prediction_type}")
 
+        noisy_latents.requires_grad = True
         conditioning_hidden_states.requires_grad = True
         
         model_pred = unet(noisy_latents, conditioning_hidden_states, timesteps, encoder_hidden_states=encoder_hidden_states).sample
