@@ -31,7 +31,7 @@ train_data:
   n_sample_frames: 8
 
   # The minimum amount of conditioning frames to fetch from n_sample_frames
-  min_conditioning_n_sample_frames: 1
+  min_conditioning_n_sample_frames: 4
 
   # The maximum amount of conditioning frames to fetch from n_sample_frames
   max_conditioning_n_sample_frames: 4
@@ -44,6 +44,7 @@ train_data:
 
   trainable_modules:
   - "conditioning_conv"
+  - "conditioning_block"
   - "conditioning_attentions"
   #- "transformer_in"
   #- "temp_attentions"
