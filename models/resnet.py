@@ -8,7 +8,6 @@ from typing import Optional
 from diffusers.models.activations import get_activation
 from diffusers.models.attention import AdaGroupNorm
 from diffusers.models.attention_processor import SpatialNorm
-from .transformers import ConditionalTransformerModel
 
 class Conditioner(nn.Module):
     def __init__(self, dim, dim_out, kernel_size, **kwargs):
@@ -20,13 +19,78 @@ class Conditioner(nn.Module):
             nn.GroupNorm(min(dim_out // 4, 32), dim_out),
             nn.SiLU()
         )
+
+        self.conditioning_block = ConditioningBlock(dim_out)
         
     def forward(self, hidden_states, conditioning_hidden_states, num_frames):        
         hidden_states = self.spatial_conv(hidden_states)
 
         conditioning_hidden_states = self.conditioning_conv(conditioning_hidden_states)
 
+        hidden_states = self.conditioning_block(hidden_states, conditioning_hidden_states, num_frames)
+
         return hidden_states, conditioning_hidden_states
+    
+class ConditionalNorm(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.gamma = nn.Sequential(
+            nn.Linear(dim, dim), 
+            nn.SiLU()
+        )
+        self.beta = nn.Sequential(
+            nn.Linear(dim, dim), 
+            nn.SiLU()
+        )
+
+        # Zero initialization
+        nn.init.zeros_(self.gamma[0].weight)
+        nn.init.ones_(self.gamma[0].bias)  # for gamma, bias is initialized to 1
+        
+        nn.init.zeros_(self.beta[0].weight)
+        nn.init.zeros_(self.beta[0].bias)  # for beta, bias is initialized to 0
+
+    def forward(self, x, y):
+        batch, _, _, height, width = y.shape
+
+        y = rearrange(y, "b c f h w -> (b h w) f c")
+
+        gamma = self.gamma(y)
+        beta = self.beta(y)
+
+        gamma = rearrange(gamma, "(b h w) f c -> b c f h w", b=batch, h=height, w=width)
+        beta = rearrange(beta, "(b h w) f c -> b c f h w", b=batch, h=height, w=width)
+
+        return gamma * x + beta
+    
+class ConditioningBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.conditioning_norm = ConditionalNorm(dim)
+
+    def forward(self, hidden_states, conditioning_hidden_states, num_frames=1):
+        batch_frames_h, _, _, _ = hidden_states.shape
+        batch_frames_c, _, _, _ = conditioning_hidden_states.shape
+
+        batch_h = batch_frames_h // num_frames
+        hidden_states = rearrange(hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames)
+
+        num_frames_c = batch_frames_c // batch_h
+        conditioning_hidden_states = rearrange(conditioning_hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames_c)
+
+        identity = hidden_states
+
+        init_conditioning_hidden_states = conditioning_hidden_states[:, :, -1, :, :].unsqueeze(2).repeat(1, 1, num_frames, 1, 1)
+
+        hidden_states = self.conditioning_norm(init_conditioning_hidden_states, hidden_states)
+
+        hidden_states = identity + hidden_states
+        
+        hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
+
+        return hidden_states
 
 class TemporalBlock(nn.Module):
     def __init__(self, dim):
