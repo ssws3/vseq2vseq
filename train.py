@@ -472,7 +472,7 @@ def main(
                                 width=sample_data.width,
                                 height=sample_data.height,
                                 conditioning_hidden_states=conditioning_hidden_states,
-                                num_frames=random.randint(8, 15),
+                                num_frames=sample_data.num_frames,
                                 num_inference_steps=sample_data.num_inference_steps,
                                 guidance_scale=sample_data.guidance_scale
                             ).frames
