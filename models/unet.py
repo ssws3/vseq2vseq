@@ -516,7 +516,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         model_3d_old_state_dict = torch.load(model_3d_old, map_location="cpu")
 
         for k, v in model_3d.state_dict().items():
-            if 'conditioning_conv' in k or 'conditioning_attentions' in k:
+            if 'conditioning_conv' in k or 'conditioning_attentions' in k or 'conditioning_block' in k:
                 model_3d_old_state_dict.update({k: v})
             if 'spatial_conv' in k:
                 new_k = k.replace('spatial_conv.','')
