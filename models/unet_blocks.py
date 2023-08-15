@@ -25,16 +25,12 @@ def get_down_block(
     temb_channels,
     add_downsample,
     resnet_eps,
-    resnet_act_fn,
     attn_num_head_channels,
     resnet_groups=None,
     cross_attention_dim=None,
     downsample_padding=None,
-    dual_cross_attention=False,
-    use_linear_projection=True,
     only_cross_attention=False,
-    upcast_attention=False,
-    resnet_time_scale_shift="default",
+    upcast_attention=False
 ):
     if down_block_type == "DownBlock3D":
         return DownBlock3D(
@@ -44,10 +40,8 @@ def get_down_block(
             temb_channels=temb_channels,
             add_downsample=add_downsample,
             resnet_eps=resnet_eps,
-            resnet_act_fn=resnet_act_fn,
             resnet_groups=resnet_groups,
-            downsample_padding=downsample_padding,
-            resnet_time_scale_shift=resnet_time_scale_shift,
+            downsample_padding=downsample_padding
         )
     elif down_block_type == "CrossAttnDownBlock3D":
         if cross_attention_dim is None:
@@ -59,19 +53,14 @@ def get_down_block(
             temb_channels=temb_channels,
             add_downsample=add_downsample,
             resnet_eps=resnet_eps,
-            resnet_act_fn=resnet_act_fn,
             resnet_groups=resnet_groups,
             downsample_padding=downsample_padding,
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attn_num_head_channels,
-            dual_cross_attention=dual_cross_attention,
-            use_linear_projection=use_linear_projection,
             only_cross_attention=only_cross_attention,
-            upcast_attention=upcast_attention,
-            resnet_time_scale_shift=resnet_time_scale_shift,
+            upcast_attention=upcast_attention
         )
     raise ValueError(f"{down_block_type} does not exist.")
-
 
 def get_up_block(
     up_block_type,
@@ -82,15 +71,11 @@ def get_up_block(
     temb_channels,
     add_upsample,
     resnet_eps,
-    resnet_act_fn,
     attn_num_head_channels,
     resnet_groups=None,
     cross_attention_dim=None,
-    dual_cross_attention=False,
-    use_linear_projection=True,
     only_cross_attention=False,
-    upcast_attention=False,
-    resnet_time_scale_shift="default",
+    upcast_attention=False
 ):
     if up_block_type == "UpBlock3D":
         return UpBlock3D(
@@ -101,9 +86,7 @@ def get_up_block(
             temb_channels=temb_channels,
             add_upsample=add_upsample,
             resnet_eps=resnet_eps,
-            resnet_act_fn=resnet_act_fn,
-            resnet_groups=resnet_groups,
-            resnet_time_scale_shift=resnet_time_scale_shift,
+            resnet_groups=resnet_groups
         )
     elif up_block_type == "CrossAttnUpBlock3D":
         if cross_attention_dim is None:
@@ -116,18 +99,13 @@ def get_up_block(
             temb_channels=temb_channels,
             add_upsample=add_upsample,
             resnet_eps=resnet_eps,
-            resnet_act_fn=resnet_act_fn,
             resnet_groups=resnet_groups,
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attn_num_head_channels,
-            dual_cross_attention=dual_cross_attention,
-            use_linear_projection=use_linear_projection,
             only_cross_attention=only_cross_attention,
-            upcast_attention=upcast_attention,
-            resnet_time_scale_shift=resnet_time_scale_shift,
+            upcast_attention=upcast_attention
         )
     raise ValueError(f"{up_block_type} does not exist.")
-
 
 class UNetMidBlock3DCrossAttn(nn.Module):
     def __init__(
@@ -137,15 +115,11 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         dropout: float = 0.0,
         num_layers: int = 1,
         resnet_eps: float = 1e-6,
-        resnet_time_scale_shift: str = "default",
-        resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
         attn_num_head_channels=1,
         output_scale_factor=1.0,
         cross_attention_dim=1280,
-        dual_cross_attention=False,
-        use_linear_projection=True,
         upcast_attention=False,
     ):
         super().__init__()
@@ -164,8 +138,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 eps=resnet_eps,
                 groups=resnet_groups,
                 dropout=dropout,
-                time_embedding_norm=resnet_time_scale_shift,
-                non_linearity=resnet_act_fn,
                 output_scale_factor=output_scale_factor,
                 pre_norm=resnet_pre_norm,
             )
@@ -190,7 +162,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
-                    use_linear_projection=use_linear_projection,
                     upcast_attention=upcast_attention,
                 )
             )
@@ -222,8 +193,6 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     eps=resnet_eps,
                     groups=resnet_groups,
                     dropout=dropout,
-                    time_embedding_norm=resnet_time_scale_shift,
-                    non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
                 )
@@ -246,7 +215,8 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         self,
         hidden_states,
         conditioning_hidden_states,
-        temb=None,
+        h_emb=None,
+        c_emb=None,
         encoder_hidden_states=None,
         attention_mask=None,
         num_frames=1,
@@ -259,10 +229,10 @@ class UNetMidBlock3DCrossAttn(nn.Module):
 
                 return custom_forward
             
-            hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(self.resnets[0]), hidden_states, conditioning_hidden_states, temb, num_frames)
+            hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(self.resnets[0]), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
             hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(self.temp_convs[0]), hidden_states, num_frames) if num_frames > 1 else hidden_states
         else:
-            hidden_states, conditioning_hidden_states = self.resnets[0](hidden_states, conditioning_hidden_states, temb, num_frames)
+            hidden_states, conditioning_hidden_states = self.resnets[0](hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
             hidden_states = self.temp_convs[0](hidden_states, num_frames) if num_frames > 1 else hidden_states
             
         for attn, temp_attn, cond_attn, resnet, temp_conv in zip(
@@ -281,13 +251,13 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
-                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
+                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
             else:
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states,cross_attention_kwargs=cross_attention_kwargs,).sample
                 hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
                 hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
-                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
+                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states    
 
         return hidden_states, conditioning_hidden_states
@@ -302,8 +272,6 @@ class CrossAttnDownBlock3D(nn.Module):
         dropout: float = 0.0,
         num_layers: int = 1,
         resnet_eps: float = 1e-6,
-        resnet_time_scale_shift: str = "default",
-        resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
         attn_num_head_channels=1,
@@ -311,8 +279,6 @@ class CrossAttnDownBlock3D(nn.Module):
         output_scale_factor=1.0,
         downsample_padding=1,
         add_downsample=True,
-        dual_cross_attention=False,
-        use_linear_projection=False,
         only_cross_attention=False,
         upcast_attention=False,
     ):
@@ -338,8 +304,6 @@ class CrossAttnDownBlock3D(nn.Module):
                     eps=resnet_eps,
                     groups=resnet_groups,
                     dropout=dropout,
-                    time_embedding_norm=resnet_time_scale_shift,
-                    non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
                 )
@@ -359,7 +323,6 @@ class CrossAttnDownBlock3D(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
-                    use_linear_projection=use_linear_projection,
                     only_cross_attention=only_cross_attention,
                     upcast_attention=upcast_attention,
                 )
@@ -405,13 +368,13 @@ class CrossAttnDownBlock3D(nn.Module):
         self,
         hidden_states,
         conditioning_hidden_states,
-        temb=None,
+        h_emb=None,
+        c_emb=None,
         encoder_hidden_states=None,
         attention_mask=None,
         num_frames=1,
         cross_attention_kwargs=None,
     ):
-        # TODO(Patrick, William) - attention mask is not used
         output_states = ()
         image_output_states = ()
 
@@ -429,13 +392,13 @@ class CrossAttnDownBlock3D(nn.Module):
 
                     return custom_forward
                 
-                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
+                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
             else:
-                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
+                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs,).sample
                 hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
@@ -463,8 +426,6 @@ class DownBlock3D(nn.Module):
         dropout: float = 0.0,
         num_layers: int = 1,
         resnet_eps: float = 1e-6,
-        resnet_time_scale_shift: str = "default",
-        resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
         output_scale_factor=1.0,
@@ -487,8 +448,6 @@ class DownBlock3D(nn.Module):
                     eps=resnet_eps,
                     groups=resnet_groups,
                     dropout=dropout,
-                    time_embedding_norm=resnet_time_scale_shift,
-                    non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
                 )
@@ -515,9 +474,9 @@ class DownBlock3D(nn.Module):
         else:
             self.downsamplers = None
 
-    def forward(self, hidden_states, conditioning_hidden_states, temb=None, num_frames=1):
+    def forward(self, hidden_states, conditioning_hidden_states, h_emb=None, c_emb=None, num_frames=1):
         output_states = ()
-        image_output_states = ()
+        conditioning_output_states = ()
 
         for resnet, temp_conv in zip(self.resnets, self.temp_convs):
             if self.gradient_checkpointing:
@@ -527,23 +486,23 @@ class DownBlock3D(nn.Module):
 
                     return custom_forward
 
-                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
+                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
             else:
-                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
+                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states                  
 
             output_states += (hidden_states,)
-            image_output_states += (conditioning_hidden_states,)
+            conditioning_output_states += (conditioning_hidden_states,)
 
         if self.downsamplers is not None:
             for downsampler in self.downsamplers:
                 hidden_states, conditioning_hidden_states = downsampler(hidden_states, conditioning_hidden_states, num_frames=num_frames)
 
             output_states += (hidden_states,)
-            image_output_states += (conditioning_hidden_states,)
+            conditioning_output_states += (conditioning_hidden_states,)
 
-        return hidden_states, output_states, conditioning_hidden_states, image_output_states
+        return hidden_states, output_states, conditioning_hidden_states, conditioning_output_states
 
 
 class CrossAttnUpBlock3D(nn.Module):
@@ -556,16 +515,12 @@ class CrossAttnUpBlock3D(nn.Module):
         dropout: float = 0.0,
         num_layers: int = 1,
         resnet_eps: float = 1e-6,
-        resnet_time_scale_shift: str = "default",
-        resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
         attn_num_head_channels=1,
         cross_attention_dim=1280,
         output_scale_factor=1.0,
         add_upsample=True,
-        dual_cross_attention=False,
-        use_linear_projection=False,
         only_cross_attention=False,
         upcast_attention=False,
     ):
@@ -593,8 +548,6 @@ class CrossAttnUpBlock3D(nn.Module):
                     eps=resnet_eps,
                     groups=resnet_groups,
                     dropout=dropout,
-                    time_embedding_norm=resnet_time_scale_shift,
-                    non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
                 )
@@ -614,7 +567,6 @@ class CrossAttnUpBlock3D(nn.Module):
                     num_layers=1,
                     cross_attention_dim=cross_attention_dim,
                     norm_num_groups=resnet_groups,
-                    use_linear_projection=use_linear_projection,
                     only_cross_attention=only_cross_attention,
                     upcast_attention=upcast_attention,
                 )
@@ -657,23 +609,21 @@ class CrossAttnUpBlock3D(nn.Module):
         res_hidden_states_tuple,
         conditioning_hidden_states,
         res_conditioning_hidden_states_tuple,
-        temb=None,
+        h_emb=None,
+        c_emb=None,
         encoder_hidden_states=None,
         upsample_size=None,
         attention_mask=None,
         num_frames=1,
         cross_attention_kwargs=None,
     ):
-        # TODO(Patrick, William) - attention mask is not used
         for resnet, temp_conv, attn, temp_attn, cond_attn in zip(
             self.resnets, self.temp_convs, self.attentions, self.temp_attentions, self.conditioning_attentions
         ):
-            # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
             hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
 
-            # pop res init hidden states
             res_conditioning_hidden_states = res_conditioning_hidden_states_tuple[-1]
             res_conditioning_hidden_states_tuple = res_conditioning_hidden_states_tuple[:-1]
             conditioning_hidden_states = torch.cat([conditioning_hidden_states, res_conditioning_hidden_states], dim=1)
@@ -688,13 +638,13 @@ class CrossAttnUpBlock3D(nn.Module):
 
                     return custom_forward
                 
-                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
+                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
             else:
-                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
+                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs,).sample
                 hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
@@ -716,8 +666,6 @@ class UpBlock3D(nn.Module):
         dropout: float = 0.0,
         num_layers: int = 1,
         resnet_eps: float = 1e-6,
-        resnet_time_scale_shift: str = "default",
-        resnet_act_fn: str = "swish",
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
         output_scale_factor=1.0,
@@ -741,8 +689,6 @@ class UpBlock3D(nn.Module):
                     eps=resnet_eps,
                     groups=resnet_groups,
                     dropout=dropout,
-                    time_embedding_norm=resnet_time_scale_shift,
-                    non_linearity=resnet_act_fn,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
                 )
@@ -769,13 +715,13 @@ class UpBlock3D(nn.Module):
             res_hidden_states_tuple, 
             conditioning_hidden_states, 
             res_conditioning_hidden_states_tuple, 
-            temb=None, 
+            h_emb=None,
+            c_emb=None,
             upsample_size=None, 
             num_frames=1
         ):
         
         for resnet, temp_conv in zip(self.resnets, self.temp_convs):
-            # pop res hidden states
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
             hidden_states = torch.cat([hidden_states, res_hidden_states], dim=1)
@@ -791,10 +737,10 @@ class UpBlock3D(nn.Module):
 
                     return custom_forward
 
-                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, temb, num_frames)
+                hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
             else:
-                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
+                hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
 
         if self.upsamplers is not None:
