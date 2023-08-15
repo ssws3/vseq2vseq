@@ -457,7 +457,7 @@ def main(
 
                         prompt = batch["text_prompt"][0] if len(sample_data.prompt) <= 0 else sample_data.prompt
                         conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt").images[0]
-                        conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(train_data.height, train_data.width), mode='bilinear', align_corners=False).squeeze(0)
+                        conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(sample_data.height, sample_data.width), mode='bilinear', align_corners=False).squeeze(0)
                         save_filename = f"{global_step}-{prompt}"
                         out_file = f"{output_dir}/samples/{save_filename}.mp4"
                         img_file = f"{output_dir}/samples/{save_filename}.png"
