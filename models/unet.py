@@ -415,9 +415,9 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
 
                     return custom_forward
 
-            sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.transformer_in, return_dict=False), sample, num_frames)[0]
+            sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.transformer_in, return_dict=False), sample, num_frames)[0] if num_frames > 1 else sample
         else:
-            sample = self.transformer_in(sample, num_frames=num_frames).sample
+            sample = self.transformer_in(sample, num_frames=num_frames).sample if num_frames > 1 else sample
 
         # 3. down
         down_block_res_samples = (sample,)
