@@ -17,7 +17,6 @@ import cv2
 from PIL import Image
 from compel import Compel
 from train import export_to_video, load_primary_models, handle_memory_attention
-from diffusers import DPMSolverMultistepScheduler
 from diffusers import TextToVideoSDPipeline, DiffusionPipeline
 from einops import rearrange
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -134,7 +133,6 @@ def initialize_pipeline(
         vae=vae.to(device=device, dtype=torch.half),
         unet=unet.to(device=device, dtype=torch.half),
     )
-    pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 
     vae.enable_slicing()
 
@@ -162,7 +160,6 @@ def prepare_input_latents(
             latents = latents.repeat(batch_size, 1, 1, 1, 1)
 
     return latents
-
 
 def encode(pipe: TextToVideoSDPipeline, pixels: Tensor, batch_size: int = 8):
     nf = pixels.shape[2]
@@ -374,9 +371,9 @@ def inference(
             )
             
             video_latents.append(latents)
-
+            
             random_slice = random.randint(min_conditioning_n_sample_frames, max_conditioning_n_sample_frames)
-            conditioning_hidden_states = latents[:, :, random_slice:, :, :]
+            conditioning_hidden_states = latents[:, :, -random_slice:, :, :]
 
         # Upscale the latents
         if upscale:
@@ -428,7 +425,7 @@ if __name__ == "__main__":
     parser.add_argument("-n", "--negative-prompt", type=str, default=None, help="Text prompt to condition against")
     parser.add_argument("-T", "--num-frames", type=int, default=16, help="Total number of frames to generate")
     parser.add_argument("-CN", "--min_conditioning_n_sample_frames", type=int, default=1, help="Total number of frames to sample for conditioning after initial video")
-    parser.add_argument("-CX", "--max_conditioning_n_sample_frames", type=int, default=8, help="Total number of frames to sample for conditioning after initial video")
+    parser.add_argument("-CX", "--max_conditioning_n_sample_frames", type=int, default=4, help="Total number of frames to sample for conditioning after initial video")
     parser.add_argument("-WI", "--width", type=int, default=512, help="Width of the video to generate (if init image is not provided)")
     parser.add_argument("-HI", "--height", type=int, default=512, help="Height of the video (if init image is not provided)")
     parser.add_argument("-IW", "--image-width", type=int, default=None, help="Width of the image to generate (if init image is not provided)")
