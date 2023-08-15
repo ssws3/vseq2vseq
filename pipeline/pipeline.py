@@ -218,7 +218,7 @@ class TextToVideoSDPipeline(DiffusionPipeline, TextualInversionLoaderMixin, Lora
         for idx in trange(
             0, pixels.shape[0], batch_size, desc="Encoding to latents...", unit_scale=batch_size, unit="frame"
         ):
-            pixels_batch = pixels[idx : idx + batch_size].to(self.device, dtype=torch.half)
+            pixels_batch = pixels[idx : idx + batch_size].to(self.device)
             latents_batch = self.vae.encode(pixels_batch).latent_dist.sample()
             latents_batch = latents_batch.mul(self.vae.config.scaling_factor).cpu()
             latents.append(latents_batch)
@@ -653,10 +653,15 @@ class TextToVideoSDPipeline(DiffusionPipeline, TextualInversionLoaderMixin, Lora
 
         scale = self.vae_scale_factor
         shape = (batch_size, 4, num_frames, height // scale, width // scale)
-        latents = torch.randn(shape, dtype=torch.half)
+        
+        latents = torch.randn(shape)
 
-        # 5. Prepare latent variables
-        conditioning_latents = self.encode(conditioning_hidden_states, batch_size)
+        if conditioning_hidden_states is None:
+            shape_c = (batch_size, 4, 1, height // scale, width // scale)
+            conditioning_latents = torch.randn(shape_c)
+        else:
+            conditioning_latents = self.encode(conditioning_hidden_states, batch_size)
+
         conditioning_latents = conditioning_latents.to(device)
         
         if conditioning_latents.shape[0] != batch_size:
