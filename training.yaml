@@ -8,7 +8,7 @@ pretrained_3d_model_path: "damo-vilab/text-to-video-ms-1.7b"
 upgrade_model: False
 
 # The folder where your training outputs will be placed
-output_dir: "outputs/modelscope-seq2seq-test-3"
+output_dir: "outputs/output"
 
 # Adds offset noise to training. Sese https://www.crosslabs.org/blog/diffusion-with-offset-noise
 offset_noise_strength: 0.1
@@ -25,10 +25,13 @@ train_data:
   use_bucketing: True
 
   # How many frames to step when sampling from the video  
-  frame_step: 4
+  frame_step: 2
 
   # The total number of frames to sample, included the ones for the conditioning
-  n_sample_frames: 8
+  n_sample_frames: 12
+
+  # Max frames to predict
+  n_max_frames: 8
 
   # The minimum amount of conditioning frames to fetch from n_sample_frames
   min_conditioning_n_sample_frames: 1
@@ -42,18 +45,21 @@ train_data:
   # If false file name will be the prompt, else the txt file
   text_file_as_prompt: False
 
+  # Center crop images
+  center_crop_images: True
+
   trainable_modules:
   - "conditioning_conv"
   - "conditioning_block"
   - "conditioning_attentions"
-  #- "transformer_in"
-  #- "temp_attentions"
-  #- "temp_convs"
+  - "transformer_in"
+  - "temp_attentions"
+  - "temp_convs"
   #- "spatial_conv"
   #- ".attentions"
   
   # Folder containing all videos (prompt should be the file name, _ are automatically replaced to space characters) (sub folders are checked as well)
-  path: "/home/polyware/webvid" # /home/polyware/Video-BLIP2-Preprocessor/outputs/hd #/home/polyware/modeltune/target_folder
+  path: "webvid" 
   
   # Path to the deepspeed config file
   deepspeed_config_file: "deepspeed/stage-2.json"
@@ -78,7 +84,7 @@ sample_data:
   fps: 16
 
   # Number of inference steps when generating the video.
-  num_inference_steps: 10
+  num_inference_steps: 25
 
   # CFG scale
   guidance_scale: 25
@@ -95,7 +101,7 @@ validation_steps: 100
 # Save only the unet with lowest validation loss
 save_only_best: True
 
-# Save a checkpoint every x steps
+# If save_only_best is False, this will save the model every checkpointing_steps steps
 checkpointing_steps: 500
 
 # How many steps to do before sampling a preview
