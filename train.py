@@ -376,9 +376,9 @@ def main(
         
         if random_slice > 0:
             conditioning_hidden_states = latents[:, :, :random_slice, :, :]
-            latents = latents[:, :, random_slice:, :, :]
+            latents = latents[:, :, random_slice:random_slice + train_data.n_max_frames, :, :]
         else:
-            conditioning_hidden_states = torch.randn(latents.shape, dtype=torch.half).to(unet_engine.device)
+            conditioning_hidden_states = torch.randn(latents.shape, device=latents.device)
 
         noise = sample_noise(latents, offset_noise_strength, use_offset_noise)
         bsz = latents.shape[0]
@@ -389,7 +389,7 @@ def main(
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
 
         token_ids = batch['prompt_ids'].to(unet_engine.device)
-        encoder_hidden_states = text_encoder(token_ids)[0].detach()  # Detach to avoid training the text encoder
+        encoder_hidden_states = text_encoder(token_ids)[0].detach()
         
         if noise_scheduler.prediction_type == "epsilon":
             target = noise
@@ -451,20 +451,22 @@ def main(
                             vae=vae,
                             unet=unet
                         )
-                        
-                        diffusion_scheduler = DPMSolverMultistepScheduler.from_config(pipeline.scheduler.config)
-                        pipeline.scheduler = diffusion_scheduler
 
                         prompt = batch["text_prompt"][0] if len(sample_data.prompt) <= 0 else sample_data.prompt
-                        conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt").images[0]
-                        conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(sample_data.height, sample_data.width), mode='bilinear', align_corners=False).squeeze(0)
                         save_filename = f"{global_step}-{prompt}"
-                        out_file = f"{output_dir}/samples/{save_filename}.mp4"
-                        img_file = f"{output_dir}/samples/{save_filename}.png"
                         encoded_out_file = f"{output_dir}/samples/{save_filename}_encoded.mp4"
 
-                        save_image(conditioning_hidden_states, img_file)
-                        conditioning_hidden_states = conditioning_hidden_states.unsqueeze(0).unsqueeze(2)
+                        out_file = f"{output_dir}/samples/{save_filename}.mp4"
+
+                        conditioning_hidden_states = None
+                        if not train_data.train_only_images:                                
+                            conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt").images[0]
+                            conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(sample_data.height, sample_data.width), mode='bilinear', align_corners=False).squeeze(0)
+                            
+                            img_file = f"{output_dir}/samples/{save_filename}.png"
+                            save_image(conditioning_hidden_states, img_file)
+
+                            conditioning_hidden_states = conditioning_hidden_states.unsqueeze(0).unsqueeze(2)
 
                         with torch.no_grad():
                             video_frames = pipeline(
@@ -474,14 +476,20 @@ def main(
                                 conditioning_hidden_states=conditioning_hidden_states,
                                 num_frames=sample_data.num_frames,
                                 num_inference_steps=sample_data.num_inference_steps,
-                                guidance_scale=sample_data.guidance_scale
+                                guidance_scale=sample_data.guidance_scale,
+                                output_type="pt" if train_data.train_only_images else "np"
                             ).frames
-
-                        export_to_video(video_frames, out_file, sample_data.fps)
+                        
+                        if not train_data.train_only_images:
+                            export_to_video(video_frames, out_file, sample_data.fps)
+                        else:
+                            img_file = f"{output_dir}/samples/{save_filename}.png"
+                            save_image(video_frames[:, :, 0, :, :].squeeze(0), img_file)
 
                         try:
-                            encode_video(out_file, encoded_out_file, get_video_height(out_file))
-                            os.remove(out_file)
+                            if not train_data.train_only_images:
+                                encode_video(out_file, encoded_out_file, get_video_height(out_file))
+                                os.remove(out_file)
                         except:
                             pass
                             
