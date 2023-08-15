@@ -5,7 +5,7 @@ pretrained_2d_model_path: "stabilityai/stable-diffusion-xl-base-1.0"
 pretrained_3d_model_path: "damo-vilab/text-to-video-ms-1.7b"
 
 # Upgrade base modelscope model to new img2vid model
-upgrade_model: False
+upgrade_model: True
 
 # The folder where your training outputs will be placed
 output_dir: "outputs/output"
