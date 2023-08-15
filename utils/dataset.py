@@ -15,13 +15,6 @@ from einops import rearrange
 
 decord.bridge.set_bridge('torch')
 
-def process_file(args):
-    file, root = args
-    if file.endswith('.mp4'):
-        full_file_path = os.path.join(root, file)
-        return full_file_path
-    return None
-
 def get_prompt_ids(prompt, tokenizer):
     prompt_ids = tokenizer(
             prompt,
@@ -32,33 +25,6 @@ def get_prompt_ids(prompt, tokenizer):
     ).input_ids
 
     return prompt_ids
-
-def center_crop(frame, crop_size):
-    h, w, _ = frame.shape
-    start_x = w//2-(crop_size//2)
-    start_y = h//2-(crop_size//2)   
-
-    return frame[start_y:start_y+crop_size, start_x:start_x+crop_size, :]
-
-def get_video_frames(vr, start_idx, sample_rate=1, max_frames=24):
-    max_range = len(vr)
-    frame_number = sorted((0, start_idx, max_range))[1]
-
-    frame_range = range(frame_number, max_range, sample_rate)
-    frame_range_indices = list(frame_range)[:max_frames]
-
-    return frame_range_indices
-
-def process_video(vid_path, use_bucketing, w, h, get_frame_buckets, get_frame_batch):
-    if use_bucketing:
-        vr = decord.VideoReader(vid_path)
-        resize = get_frame_buckets(vr)
-        video = get_frame_batch(vr, resize=resize)
-    else:
-        vr = decord.VideoReader(vid_path, width=w, height=h)
-        video = get_frame_batch(vr, crop=True, w=w)
-
-    return video, vr
 
 class VideoFolderDataset(Dataset):
     def __init__(
@@ -89,13 +55,49 @@ class VideoFolderDataset(Dataset):
         self.frame_step = frame_step
 
         self.text_file_as_prompt = text_file_as_prompt
+
+    def process_file(self, args):
+        file, root = args
+
+        if file.endswith('.mp4'):
+            full_file_path = os.path.join(root, file)
+            return full_file_path
+        
+        return None
+    
+    def center_crop(self, frame, crop_size):
+        h, w, _ = frame.shape
+        start_x = w//2-(crop_size//2)
+        start_y = h//2-(crop_size//2)   
+
+        return frame[start_y:start_y+crop_size, start_x:start_x+crop_size, :]
+
+    def get_video_frames(self, vr, start_idx, sample_rate=1, max_frames=24):
+        max_range = len(vr)
+        frame_number = sorted((0, start_idx, max_range))[1]
+
+        frame_range = range(frame_number, max_range, sample_rate)
+        frame_range_indices = list(frame_range)[:max_frames]
+
+        return frame_range_indices
+
+    def process_video(self, vid_path, use_bucketing, w, h, get_frame_buckets, get_frame_batch):
+        if use_bucketing:
+            vr = decord.VideoReader(vid_path)
+            resize = get_frame_buckets(vr)
+            video = get_frame_batch(vr, resize=resize)
+        else:
+            vr = decord.VideoReader(vid_path, width=w, height=h)
+            video = get_frame_batch(vr, crop=True, w=w)
+
+        return video, vr
     
     def find_videos(self, path):
         with concurrent.futures.ThreadPoolExecutor() as executor:
             jobs = []
             for root, dirs, files in os.walk(path):
                 for file in files:
-                    jobs.append(executor.submit(process_file, (file, root)))
+                    jobs.append(executor.submit(self.process_file, (file, root)))
             
             for future in tqdm(concurrent.futures.as_completed(jobs), total=len(jobs)):
                 result = future.result()
@@ -130,7 +132,7 @@ class VideoFolderDataset(Dataset):
         video = rearrange(video, "f h w c -> f c h w")
 
         if crop is not None:
-            video = np.stack([center_crop(frame, w) for frame in video])
+            video = np.stack([self.center_crop(frame, w) for frame in video])
 
         if resize is not None: 
             video = resize(video)
@@ -138,7 +140,7 @@ class VideoFolderDataset(Dataset):
         return video, vr
         
     def process_video_wrapper(self, vid_path):
-        video, vr = process_video(
+        video, vr = self.process_video(
             vid_path,
             self.use_bucketing,
             self.width, 
@@ -172,13 +174,18 @@ class VideoFolderDataset(Dataset):
         if video is None or (video and video[0] is None):
             return self.__getitem__((index + 1) % len(self))
 
-        basename = os.path.basename(self.video_files[index]).replace('.mp4', '').replace('_', ' ')
-        split_basename = basename.split('-')
+        basename = os.path.basename(self.video_files[index]).split('.')[0].replace('_', ' ')
 
-        if len(split_basename) > 1:
-            prompt = '-'.join(split_basename[:-1])
+        if self.text_file_as_prompt:
+            with open(os.path.splitext(self.video_files[index])[0] + ".txt", 'r') as file:
+                prompt = file.readline().strip()
         else:
-            prompt = split_basename[0]
+            split_basename = basename.split('-')
+
+            if len(split_basename) > 1:
+                prompt = '-'.join(split_basename[:-1])
+            else:
+                prompt = split_basename[0]
 
         if not prompt:
             prompt = self.fallback_prompt
@@ -192,35 +199,41 @@ class ImageFolderDataset(Dataset):
                 tokenizer=None,
                 width: int = 768,
                 height: int = 768,
-                n_sample_frames: int = 16,
-                frame_step: int = 4,
                 text_file_as_prompt: bool = False,
                 path: str = "./data",
                 fallback_prompt: str = "",
-                use_bucketing: bool = False,
+                center_crop_images: bool = False,
                 **kwargs
                 ):
         self.tokenizer = tokenizer
         self.fallback_prompt = fallback_prompt
+
         self.image_files = []
         self.find_images(path)
+
         self.width = width
         self.height = height
         self.resize = T.Resize((self.height, self.width))
-        self.text_file_as_prompt = text_file_as_prompt
 
-    def process_file(self, args):
-        file, root = args
-        if file.lower().endswith(('.png', '.jpg', '.jpeg')):
-            full_file_path = os.path.join(root, file)
-            return full_file_path
-        return None
+        self.text_file_as_prompt = text_file_as_prompt
+        self.center_crop_images = center_crop_images
 
     def center_crop(self, img, crop_size):
         w, h = img.size
+
         start_x = w//2-(crop_size//2)
         start_y = h//2-(crop_size//2)
+        
         return img.crop((start_x, start_y, start_x+crop_size, start_y+crop_size))
+    
+    def process_file(self, args):
+        file, root = args
+
+        if file.lower().endswith(('.png', '.jpg', '.jpeg')):
+            full_file_path = os.path.join(root, file)
+            return full_file_path
+        
+        return None
 
     def find_images(self, path):
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -228,7 +241,7 @@ class ImageFolderDataset(Dataset):
             for root, dirs, files in os.walk(path):
                 for file in files:
                     jobs.append(executor.submit(self.process_file, (file, root)))
-            # Collect all files first
+
             for future in concurrent.futures.as_completed(jobs):
                 result = future.result()
                 if result is not None:
@@ -256,9 +269,11 @@ class ImageFolderDataset(Dataset):
         except:
             return self.__getitem__((index + 1) % len(self))
         
+        if self.center_crop_images:
+            image = self.center_crop(image, min(image.size))
         image = self.resize(image)
-        image = T.ToTensor()(image) # Convert PIL Image to PyTorch tensor
-        image = rearrange(image, "c h w -> () c h w") # Add extra dimensions to match 'c f h w' format
+        image = T.ToTensor()(image)
+        image = rearrange(image, "c h w -> () c h w")
 
         basename = os.path.basename(img_path).split('.')[0].replace('_', ' ')
 
