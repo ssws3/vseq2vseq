@@ -40,6 +40,9 @@ def center_crop(frame, crop_size):
 
     return frame[start_y:start_y+crop_size, start_x:start_x+crop_size, :]
 
+def resize_image(img, target_width, target_height):
+    return img.resize((target_width, target_height), Image.ANTIALIAS)
+
 def get_video_frames(vr, start_idx, sample_rate=1, max_frames=24):
     max_range = len(vr)
     frame_number = sorted((0, start_idx, max_range))[1]
@@ -256,7 +259,7 @@ class ImageFolderDataset(Dataset):
         except:
             return self.__getitem__((index + 1) % len(self))
         
-        image = self.center_crop(image, min(image.size))
+        image = resize_image(image, self.width, self.height)
         image = self.resize(image)
         image = T.ToTensor()(image) # Convert PIL Image to PyTorch tensor
         image = rearrange(image, "c h w -> () c h w") # Add extra dimensions to match 'c f h w' format
