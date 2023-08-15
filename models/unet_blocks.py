@@ -288,7 +288,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
                 hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, temb, num_frames=num_frames)
-                hidden_states = temp_conv(hidden_states) if num_frames > 1 else hidden_states    
+                hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states    
 
         return hidden_states, conditioning_hidden_states
 
