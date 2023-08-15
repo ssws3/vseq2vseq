@@ -85,7 +85,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
     @register_to_config
     def __init__(
         self,
-        sample_size: Optional[int] = 64,
+        sample_size: Optional[int] = None,
         in_channels: int = 4,
         out_channels: int = 4,
         down_block_types: Tuple[str] = (
@@ -172,12 +172,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 temb_channels=time_embed_dim,
                 add_downsample=not is_final_block,
                 resnet_eps=norm_eps,
-                resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
                 cross_attention_dim=cross_attention_dim,
                 attn_num_head_channels=attention_head_dim[i],
-                downsample_padding=downsample_padding,
-                dual_cross_attention=False,
+                downsample_padding=downsample_padding
             )
             self.down_blocks.append(down_block)
 
@@ -186,12 +184,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             in_channels=block_out_channels[-1],
             temb_channels=time_embed_dim,
             resnet_eps=norm_eps,
-            resnet_act_fn=act_fn,
             output_scale_factor=mid_block_scale_factor,
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attention_head_dim[-1],
-            resnet_groups=norm_num_groups,
-            dual_cross_attention=False,
+            resnet_groups=norm_num_groups
         )
 
         # count how many layers upsample the images
@@ -225,11 +221,9 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 temb_channels=time_embed_dim,
                 add_upsample=add_upsample,
                 resnet_eps=norm_eps,
-                resnet_act_fn=act_fn,
                 resnet_groups=norm_num_groups,
                 cross_attention_dim=cross_attention_dim,
-                attn_num_head_channels=reversed_attention_head_dim[i],
-                dual_cross_attention=False,
+                attn_num_head_channels=reversed_attention_head_dim[i]
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -390,14 +384,15 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         timesteps = timesteps.expand(sample.shape[0])
 
         t_emb = self.time_proj(timesteps)
-
         # timesteps does not contain any weights and will always return f32 tensors
         # but time_embedding might actually be running in fp16. so we need to cast here.
         # there might be better ways to encapsulate this.
         t_emb = t_emb.to(dtype=self.dtype)
 
         emb = self.time_embedding(t_emb, timestep_cond)
-        emb = emb.repeat_interleave(repeats=num_frames, dim=0)
+        h_emb = emb.repeat_interleave(repeats=num_frames, dim=0)
+        c_emb = emb.repeat_interleave(repeats=num_frames_c, dim=0)
+        
         encoder_hidden_states = encoder_hidden_states.repeat_interleave(repeats=num_frames, dim=0)
 
         # 2. pre-process
@@ -427,14 +422,15 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 sample, res_samples, conditioning_hidden_states, res_conditioning_hidden_states = downsample_block(
                     hidden_states=sample,
                     conditioning_hidden_states=conditioning_hidden_states,
-                    temb=emb,
+                    h_emb=h_emb,
+                    c_emb=c_emb,
                     encoder_hidden_states=encoder_hidden_states,
                     attention_mask=attention_mask,
                     num_frames=num_frames,
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
             else:
-                sample, res_samples, conditioning_hidden_states, res_conditioning_hidden_states = downsample_block(hidden_states=sample, conditioning_hidden_states=conditioning_hidden_states, temb=emb, num_frames=num_frames)
+                sample, res_samples, conditioning_hidden_states, res_conditioning_hidden_states = downsample_block(hidden_states=sample, conditioning_hidden_states=conditioning_hidden_states, h_emb=h_emb, c_emb=c_emb, num_frames=num_frames)
 
             down_block_res_samples += res_samples
             down_block_res_conditioning_hidden_states += res_conditioning_hidden_states
@@ -444,7 +440,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             sample, conditioning_hidden_states = self.mid_block(
                 sample,
                 conditioning_hidden_states,
-                emb,
+                h_emb=h_emb,
+                c_emb=c_emb,
                 encoder_hidden_states=encoder_hidden_states,
                 attention_mask=attention_mask,
                 num_frames=num_frames,
@@ -472,7 +469,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     res_hidden_states_tuple=res_samples,
                     conditioning_hidden_states=conditioning_hidden_states,
                     res_conditioning_hidden_states_tuple=conditioning_hidden_states_res_samples,
-                    temb=emb,
+                    h_emb=h_emb,
+                    c_emb=c_emb,
                     encoder_hidden_states=encoder_hidden_states,
                     upsample_size=upsample_size,
                     attention_mask=attention_mask,
@@ -485,7 +483,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     res_hidden_states_tuple=res_samples,
                     conditioning_hidden_states=conditioning_hidden_states,
                     res_conditioning_hidden_states_tuple=conditioning_hidden_states_res_samples,
-                    temb=emb,
+                    h_emb=h_emb,
+                    c_emb=c_emb,
                     upsample_size=upsample_size,
                     num_frames=num_frames
                 )
@@ -516,12 +515,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         model_3d_old_state_dict = torch.load(model_3d_old, map_location="cpu")
 
         for k, v in model_3d.state_dict().items():
-            if 'conditioning_conv' in k or 'conditioning_attentions' in k or 'conditioning_block' in k:
-                model_3d_old_state_dict.update({k: v})
             if 'spatial_conv' in k:
                 new_k = k.replace('spatial_conv.','')
                 model_3d_old_state_dict[k] = model_3d_old_state_dict.pop(new_k)
 
-        model_3d.load_state_dict(model_3d_old_state_dict)
+        model_3d.load_state_dict(model_3d_old_state_dict, strict=False)
 
         return model_3d
