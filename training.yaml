@@ -55,7 +55,7 @@ train_data:
   - "transformer_in"
   - "temp_attentions"
   - "temp_convs"
-  - "time_c_emb_proj"
+  - "c_"
   #- "spatial_conv"
   #- ".attentions"
   
