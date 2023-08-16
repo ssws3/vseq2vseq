@@ -17,9 +17,10 @@ import torch.distributed as dist
 import subprocess
 import wandb
 import random
+import numpy as np
 
 from PIL import Image
-from typing import Dict
+from typing import Dict, List
 from omegaconf import OmegaConf
 from tqdm.auto import tqdm
 from einops import rearrange
@@ -47,6 +48,24 @@ def save_image(tensor, filename):
     tensor = (tensor * 255).astype('uint8')  # Denormalize
     img = Image.fromarray(tensor)  # Convert to a PIL image
     img.save(filename)  # Save image
+
+def tensor2img(image: torch.Tensor, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], file_name='image.png') -> np.ndarray:
+    # reshape to bchw
+    mean = torch.tensor(mean, device=image.device).reshape(1, -1, 1, 1)
+    std = torch.tensor(std, device=image.device).reshape(1, -1, 1, 1)
+    # unnormalize back to [0,1]
+    image = image.mul_(std).add_(mean)
+    image.clamp_(0, 1)
+    # prepare the final outputs
+    b, c, h, w = image.shape
+    image = image.permute(0, 2, 3, 1).reshape(b * h, w, c)
+    image = (image.cpu().numpy() * 255).astype("uint8") # h w c
+
+    # If the image is in the format (h, w, 3), assume it's RGB and convert to BGR for OpenCV
+    if image.shape[2] == 3:
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+
+    cv2.imwrite(file_name, image)
 
 def set_processors(attentions):
     for attn in attentions: attn.set_processor(AttnProcessor2_0()) 
@@ -321,6 +340,7 @@ def main(
 
     if train_data.train_only_images:
         train_data.n_sample_frames = 1
+        
         train_data.min_conditioning_n_sample_frames = 0
         train_data.max_conditioning_n_sample_frames = 0
         
@@ -474,7 +494,7 @@ def main(
                                 width=sample_data.width,
                                 height=sample_data.height,
                                 conditioning_hidden_states=conditioning_hidden_states,
-                                num_frames=sample_data.num_frames,
+                                num_frames=sample_data.num_frames if not train_data.train_only_images else 1,
                                 num_inference_steps=sample_data.num_inference_steps,
                                 guidance_scale=sample_data.guidance_scale,
                                 output_type="pt" if train_data.train_only_images else "np"
@@ -484,7 +504,7 @@ def main(
                             export_to_video(video_frames, out_file, sample_data.fps)
                         else:
                             img_file = f"{output_dir}/samples/{save_filename}.png"
-                            save_image(video_frames[:, :, 0, :, :].squeeze(0), img_file)
+                            tensor2img(video_frames[:, :, 0, :, :], file_name=img_file)
 
                         try:
                             if not train_data.train_only_images:
