@@ -45,9 +45,6 @@ train_data:
   # If false file name will be the prompt, else the txt file
   text_file_as_prompt: False
 
-  # Center crop images
-  center_crop_images: True
-
   trainable_modules:
   - "conditioning_conv"
   - "conditioning_block"
