@@ -174,25 +174,18 @@ class VideoFolderDataset(Dataset):
         if video is None or (video and video[0] is None):
             return self.__getitem__((index + 1) % len(self))
 
-        basename = os.path.basename(self.video_files[index]).split('.')[0].replace('_', ' ')
-
         if self.text_file_as_prompt:
             with open(os.path.splitext(self.video_files[index])[0] + ".txt", 'r') as file:
                 prompt = file.readline().strip()
         else:
-            split_basename = basename.split('-')
-
-            if len(split_basename) > 1:
-                prompt = '-'.join(split_basename[:-1])
-            else:
-                prompt = split_basename[0]
+            prompt = os.path.basename(self.video_files[index]).split('.')[0].replace('_', ' ')
 
         if not prompt:
             prompt = self.fallback_prompt
 
         prompt_ids = self.get_prompt_ids(prompt)
 
-        return {"pixel_values": (video[0] / 127.5 - 1.0), "prompt_ids": prompt_ids[0], "text_prompt": prompt, "file": basename, 'dataset': self.__getname__()}
+        return {"pixel_values": (video[0] / 127.5 - 1.0), "prompt_ids": prompt_ids[0], "text_prompt": prompt, 'dataset': self.__getname__()}
     
 class ImageFolderDataset(Dataset):
     def __init__(self, 
@@ -202,7 +195,6 @@ class ImageFolderDataset(Dataset):
                 text_file_as_prompt: bool = False,
                 path: str = "./data",
                 fallback_prompt: str = "",
-                center_crop_images: bool = False,
                 **kwargs
                 ):
         self.tokenizer = tokenizer
@@ -216,15 +208,38 @@ class ImageFolderDataset(Dataset):
         self.resize = T.Resize((self.height, self.width))
 
         self.text_file_as_prompt = text_file_as_prompt
-        self.center_crop_images = center_crop_images
+    
+    def crop(self, image, target_width, target_height):
+        width, height = image.size
 
-    def center_crop(self, img, crop_size):
-        w, h = img.size
+        # Check if target dimensions are greater than the original
+        if target_width > width or target_height > height:
+            # Calculate the aspect ratio of the original image
+            aspect_ratio = width / height
 
-        start_x = w//2-(crop_size//2)
-        start_y = h//2-(crop_size//2)
-        
-        return img.crop((start_x, start_y, start_x+crop_size, start_y+crop_size))
+            # Calculate the new width and height based on the target dimensions
+            # and the original aspect ratio
+            if target_width / target_height > aspect_ratio:
+                new_width = int(target_height * aspect_ratio)
+                new_height = target_height
+            else:
+                new_width = target_width
+                new_height = int(target_width / aspect_ratio)
+
+            # Resize the image to the new dimensions using interpolation
+            image = image.resize((new_width, new_height), Image.BICUBIC)
+
+            # Update the width and height variables with the new dimensions
+            width, height = new_width, new_height
+
+        # Calculate the x and y coordinates of the center crop
+        x = (width - target_width) // 2
+        y = (height - target_height) // 2
+
+        # Crop the image to the center
+        cropped_image = image.crop((x, y, x + target_width, y + target_height))
+
+        return cropped_image
     
     def process_file(self, args):
         file, root = args
@@ -269,28 +284,20 @@ class ImageFolderDataset(Dataset):
         except:
             return self.__getitem__((index + 1) % len(self))
         
-        if self.center_crop_images:
-            image = self.center_crop(image, min(image.size))
-        image = self.resize(image)
+        image = self.crop(image, target_width=self.width, target_height=self.height)
         image = T.ToTensor()(image)
+        
         image = rearrange(image, "c h w -> () c h w")
-
-        basename = os.path.basename(img_path).split('.')[0].replace('_', ' ')
 
         if self.text_file_as_prompt:
             with open(os.path.splitext(img_path)[0] + ".txt", 'r') as file:
                 prompt = file.readline().strip()
         else:
-            split_basename = basename.split('-')
-
-            if len(split_basename) > 1:
-                prompt = '-'.join(split_basename[:-1])
-            else:
-                prompt = split_basename[0]
+            prompt = os.path.basename(img_path).split('.')[0].replace('_', ' ')
 
         if not prompt:
             prompt = self.fallback_prompt
 
         prompt_ids = self.get_prompt_ids(prompt)
 
-        return {"pixel_values": (image / 127.5 - 1.0), "prompt_ids": prompt_ids[0], "text_prompt": prompt, "file": basename, 'dataset': self.__getname__()}
+        return {"pixel_values": (image / 127.5 - 1.0), "prompt_ids": prompt_ids[0], "text_prompt": prompt, 'dataset': self.__getname__()}
