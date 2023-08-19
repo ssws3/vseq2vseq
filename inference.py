@@ -28,7 +28,6 @@ from diffusers.utils import PIL_INTERPOLATION
 from diffusers import StableDiffusionLatentUpscalePipeline
 from einops import rearrange
 
-
 def normalize_contrast(clips):
     # Compute the overall mean and standard deviation
     overall_mean = torch.mean(torch.stack([torch.mean(clip) for clip in clips]))
