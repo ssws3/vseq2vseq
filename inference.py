@@ -28,6 +28,22 @@ from diffusers.utils import PIL_INTERPOLATION
 from diffusers import StableDiffusionLatentUpscalePipeline
 from einops import rearrange
 
+
+def normalize_contrast(clips):
+    # Compute the overall mean and standard deviation
+    overall_mean = torch.mean(torch.stack([torch.mean(clip) for clip in clips]))
+    overall_std = torch.mean(torch.stack([torch.std(clip) for clip in clips]))
+
+    # Normalize each clip
+    normalized_clips = []
+    for clip in clips:
+        clip_mean = torch.mean(clip)
+        clip_std = torch.std(clip)
+        normalized_clip = (clip - clip_mean) / clip_std * overall_std + overall_mean
+        normalized_clips.append(normalized_clip)
+
+    return normalized_clips
+
 def enhance_contrast_clahe_4d(tensor, clip_limit=1.2, tile_grid_size=(1,1), gamma=0.98):
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
     
@@ -409,8 +425,15 @@ def inference(
 
         # decode latents to pixel space
         videos = decode(pipe, video_latents, vae_batch_size)
+        videos = normalize_contrast(videos)
 
-    return torch.cat(torch.unbind(videos, dim=0), dim=1)
+    unbound_clips = torch.unbind(torch.stack(videos, dim=0), dim=0)
+    tensor_of_clips = torch.stack(videos, dim=0)
+    
+    unbound_clips = torch.unbind(tensor_of_clips, dim=0)
+    concatenated_clips = torch.cat(unbound_clips, dim=1)
+
+    return concatenated_clips
 
 if __name__ == "__main__":
     import decord
