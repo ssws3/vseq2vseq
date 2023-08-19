@@ -528,6 +528,7 @@ class TextToVideoSDPipeline(DiffusionPipeline, TextualInversionLoaderMixin, Lora
         guidance_scale: float = 9.0,
         negative_prompt: Optional[Union[str, List[str]]] = None,
         eta: float = 0.0,
+        encode_to_latent: bool = False,
         conditioning_hidden_states: torch.Tensor = None,
         generator: Optional[Union[torch.Generator, List[torch.Generator]]] = None,
         latents: Optional[torch.FloatTensor] = None,
@@ -660,7 +661,7 @@ class TextToVideoSDPipeline(DiffusionPipeline, TextualInversionLoaderMixin, Lora
             shape_c = (batch_size, 4, 1, height // scale, width // scale)
             conditioning_latents = torch.randn(shape_c)
         else:
-            conditioning_latents = self.encode(conditioning_hidden_states, batch_size)
+            conditioning_latents = self.encode(conditioning_hidden_states, batch_size) if encode_to_latent else conditioning_hidden_states
 
         conditioning_latents = conditioning_latents.to(device)
         
