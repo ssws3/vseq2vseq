@@ -316,7 +316,6 @@ def diffuse(
     
     return noisy_latents
 
-
 @torch.inference_mode()
 def inference(
     model: str,
@@ -390,18 +389,15 @@ def inference(
             random_slice = random.randint(min_conditioning_n_sample_frames, max_conditioning_n_sample_frames)
             conditioning_hidden_states = latents[:, :, -random_slice:, :, :]
 
-        # Upscale the latents
         if upscale:
             upscaler = StableDiffusionLatentUpscalePipeline.from_pretrained("stabilityai/sd-x2-latent-upscaler", torch_dtype=torch.float16)
             upscaler.to(device)
             
             concat_videos = torch.cat(video_latents, dim=0)
 
-            # Reshape to put frames of each video into the batch dimension, but keep videos separate
             reshaped_videos = rearrange(concat_videos, 'b c f h w -> (b f) c h w')
 
             upscaled_reshaped_videos = []
-
             for i in range(0, reshaped_videos.shape[0], num_frames):
                 reshaped_frames = reshaped_videos[i:i+num_frames]
                 prompt_repeated = [prompt] * len(reshaped_frames)
@@ -417,12 +413,10 @@ def inference(
 
             upscaled_reshaped_videos = torch.cat(upscaled_reshaped_videos, dim=0)
 
-            # Reshape back to the original structure with increased height and width
             video_latents = rearrange(upscaled_reshaped_videos, '(b f) c (h h2) (w w2) -> b c f (h h2) (w w2)', b=concat_videos.shape[0], f=concat_videos.shape[2], h2=2, w2=2)
         else:
             video_latents = torch.cat(video_latents, dim=0)
 
-        # decode latents to pixel space
         videos = decode(pipe, video_latents, vae_batch_size)
         videos = normalize_contrast(videos)
 
@@ -531,7 +525,6 @@ if __name__ == "__main__":
         video = rearrange(video, "c f h w -> f h w c").clamp(-1, 1).add(1).mul(127.5)
         video = video.byte().cpu().numpy()
 
-        # Enhance the contrast of the video
         video = enhance_contrast_clahe_4d(video)
 
         unique_id = str(uuid4())[:8]
