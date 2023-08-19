@@ -5,20 +5,21 @@ import torch.nn.functional as F
 from einops import rearrange
 
 class Conditioner(nn.Module):
-    def __init__(self, dim, dim_out, kernel_size, **kwargs):
+    def __init__(self, dim, dim_out, use_conditioning_norm, kernel_size, **kwargs):
         super().__init__()
 
         self.spatial_conv = nn.Conv2d(dim, dim_out, kernel_size, **kwargs)
         self.conditioning_conv = nn.Conv2d(dim, dim_out, kernel_size, **kwargs)
 
-        self.conditioning_block = ConditioningBlock(dim_out)
+        self.conditioning_block = ConditioningBlock(dim_out) if use_conditioning_norm else None
         
     def forward(self, hidden_states, conditioning_hidden_states, num_frames):        
         hidden_states = self.spatial_conv(hidden_states)
 
         conditioning_hidden_states = self.conditioning_conv(conditioning_hidden_states)
-
-        hidden_states = self.conditioning_block(hidden_states, conditioning_hidden_states, num_frames) if num_frames > 1 else hidden_states
+        
+        if self.conditioning_block:
+            hidden_states = self.conditioning_block(hidden_states, conditioning_hidden_states, num_frames) if num_frames > 1 else hidden_states
 
         return hidden_states, conditioning_hidden_states
     
@@ -37,10 +38,10 @@ class ConditionalNorm(nn.Module):
 
         # Zero initialization
         nn.init.zeros_(self.gamma[0].weight)
-        nn.init.ones_(self.gamma[0].bias)  # for gamma, bias is initialized to 1
+        nn.init.ones_(self.gamma[0].bias)
         
         nn.init.zeros_(self.beta[0].weight)
-        nn.init.zeros_(self.beta[0].bias)  # for beta, bias is initialized to 0
+        nn.init.zeros_(self.beta[0].bias)
 
     def forward(self, x, y):
         batch, _, _, height, width = y.shape
@@ -167,7 +168,7 @@ class TemporalConvLayer(nn.Module):
         return hidden_states
     
 class Downsample2D(nn.Module):
-    def __init__(self, channels, use_conv=False, out_channels=None, padding=1, name="conv"):
+    def __init__(self, channels, use_conv=False, out_channels=None, use_conditioning_norm=True, padding=1, name="conv"):
         super().__init__()
 
         self.channels = channels
@@ -177,7 +178,7 @@ class Downsample2D(nn.Module):
         stride = 2
         self.name = name
 
-        self.conv = Conditioner(self.channels, self.out_channels, 3, stride=stride, padding=padding)
+        self.conv = Conditioner(self.channels, self.out_channels, use_conditioning_norm, 3, stride=stride, padding=padding)
 
     def forward(self, hidden_states, conditioning_hidden_states, num_frames):
         assert hidden_states.shape[1] == self.channels
@@ -207,7 +208,8 @@ class ResnetBlock2D(nn.Module):
         output_scale_factor=1.0,
         up=False,
         down=False,
-        conv_shortcut_bias: bool = True
+        conv_shortcut_bias: bool = True,
+        use_conditioning_norm: bool = True
     ):
         super().__init__()
 
@@ -227,7 +229,7 @@ class ResnetBlock2D(nn.Module):
         self.c_norm1 = torch.nn.GroupNorm(num_groups=groups, num_channels=in_channels, eps=eps, affine=True)
         self.c_silu1 = nn.SiLU()
 
-        self.conv1 = Conditioner(in_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.conv1 = Conditioner(in_channels, out_channels, use_conditioning_norm, kernel_size=3, stride=1, padding=1)
         
         self.time_emb_silu = nn.SiLU()
         self.time_emb_proj = torch.nn.Linear(temb_channels, out_channels)
@@ -243,19 +245,19 @@ class ResnetBlock2D(nn.Module):
         self.c_norm2 = torch.nn.GroupNorm(num_groups=groups, num_channels=out_channels, eps=eps, affine=True)
         self.c_silu2 = nn.SiLU()
 
-        self.conv2 = Conditioner(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.conv2 = Conditioner(out_channels, out_channels, use_conditioning_norm, kernel_size=3, stride=1, padding=1)
 
         self.upsample = self.downsample = None
 
         if self.up:
-            self.upsample = Upsample2D(in_channels, use_conv=False)
+            self.upsample = Upsample2D(in_channels, use_conv=False, use_conditioning_norm=use_conditioning_norm)
         elif self.down:
-            self.downsample = Downsample2D(in_channels, use_conv=False, padding=1, name="op")
+            self.downsample = Downsample2D(in_channels, use_conv=False, use_conditioning_norm=use_conditioning_norm, padding=1, name="op")
 
         self.conv_shortcut = None
         if self.in_channels != self.out_channels:
             self.conv_shortcut = Conditioner(
-                in_channels, out_channels, kernel_size=1, stride=1, padding=0, bias=conv_shortcut_bias
+                in_channels, out_channels, use_conditioning_norm, kernel_size=1, stride=1, padding=0, bias=conv_shortcut_bias
             )
 
     def forward(self, input_tensor, conditioning_input_tensor, h_emb, c_emb, num_frames=1):
@@ -312,7 +314,7 @@ class ResnetBlock2D(nn.Module):
         return output_tensor, output_conditioning_hidden_states
     
 class Upsample2D(nn.Module):
-    def __init__(self, channels, use_conv=False, out_channels=None, name="conv"):
+    def __init__(self, channels, use_conv=False, out_channels=None, use_conditioning_norm=True, name="conv"):
         super().__init__()
 
         self.channels = channels
@@ -320,7 +322,7 @@ class Upsample2D(nn.Module):
         self.use_conv = use_conv
         self.name = name
 
-        self.conv = Conditioner(self.channels, self.out_channels, 3, padding=1)
+        self.conv = Conditioner(self.channels, self.out_channels, use_conditioning_norm, 3, padding=1)
 
     def forward(self, hidden_states, conditioning_hidden_states, output_size=None, num_frames=1):
         assert hidden_states.shape[1] == self.channels
