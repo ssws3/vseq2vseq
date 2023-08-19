@@ -26,6 +26,7 @@ def get_down_block(
     add_downsample,
     resnet_eps,
     attn_num_head_channels,
+    use_conditioning_norm=True,
     resnet_groups=None,
     cross_attention_dim=None,
     downsample_padding=None,
@@ -41,7 +42,8 @@ def get_down_block(
             add_downsample=add_downsample,
             resnet_eps=resnet_eps,
             resnet_groups=resnet_groups,
-            downsample_padding=downsample_padding
+            downsample_padding=downsample_padding,
+            use_conditioning_norm=use_conditioning_norm
         )
     elif down_block_type == "CrossAttnDownBlock3D":
         if cross_attention_dim is None:
@@ -58,7 +60,8 @@ def get_down_block(
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attn_num_head_channels,
             only_cross_attention=only_cross_attention,
-            upcast_attention=upcast_attention
+            upcast_attention=upcast_attention,
+            use_conditioning_norm=use_conditioning_norm
         )
     raise ValueError(f"{down_block_type} does not exist.")
 
@@ -72,6 +75,7 @@ def get_up_block(
     add_upsample,
     resnet_eps,
     attn_num_head_channels,
+    use_conditioning_norm=True,
     resnet_groups=None,
     cross_attention_dim=None,
     only_cross_attention=False,
@@ -86,7 +90,8 @@ def get_up_block(
             temb_channels=temb_channels,
             add_upsample=add_upsample,
             resnet_eps=resnet_eps,
-            resnet_groups=resnet_groups
+            resnet_groups=resnet_groups,
+            use_conditioning_norm=use_conditioning_norm
         )
     elif up_block_type == "CrossAttnUpBlock3D":
         if cross_attention_dim is None:
@@ -103,7 +108,8 @@ def get_up_block(
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attn_num_head_channels,
             only_cross_attention=only_cross_attention,
-            upcast_attention=upcast_attention
+            upcast_attention=upcast_attention,
+            use_conditioning_norm=use_conditioning_norm
         )
     raise ValueError(f"{up_block_type} does not exist.")
 
@@ -120,6 +126,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         attn_num_head_channels=1,
         output_scale_factor=1.0,
         cross_attention_dim=1280,
+        use_conditioning_norm=True,
         upcast_attention=False,
     ):
         super().__init__()
@@ -140,6 +147,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                 dropout=dropout,
                 output_scale_factor=output_scale_factor,
                 pre_norm=resnet_pre_norm,
+                use_conditioning_norm=use_conditioning_norm
             )
         ]
         temp_convs = [
@@ -195,6 +203,7 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     dropout=dropout,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    use_conditioning_norm=use_conditioning_norm
                 )
             )
             temp_convs.append(
@@ -278,6 +287,7 @@ class CrossAttnDownBlock3D(nn.Module):
         cross_attention_dim=1280,
         output_scale_factor=1.0,
         downsample_padding=1,
+        use_conditioning_norm=False,
         add_downsample=True,
         only_cross_attention=False,
         upcast_attention=False,
@@ -306,6 +316,7 @@ class CrossAttnDownBlock3D(nn.Module):
                     dropout=dropout,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    use_conditioning_norm=use_conditioning_norm
                 )
             )
             temp_convs.append(
@@ -357,7 +368,7 @@ class CrossAttnDownBlock3D(nn.Module):
             self.downsamplers = nn.ModuleList(
                 [
                     Downsample2D(
-                        out_channels, use_conv=True, out_channels=out_channels, padding=downsample_padding, name="op"
+                        out_channels, use_conv=True, out_channels=out_channels, use_conditioning_norm=use_conditioning_norm, padding=downsample_padding, name="op"
                     )
                 ]
             )
@@ -430,6 +441,7 @@ class DownBlock3D(nn.Module):
         resnet_pre_norm: bool = True,
         output_scale_factor=1.0,
         add_downsample=True,
+        use_conditioning_norm=True,
         downsample_padding=1,
     ):
         super().__init__()
@@ -450,6 +462,7 @@ class DownBlock3D(nn.Module):
                     dropout=dropout,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    use_conditioning_norm=use_conditioning_norm
                 )
             )
             temp_convs.append(
@@ -467,7 +480,7 @@ class DownBlock3D(nn.Module):
             self.downsamplers = nn.ModuleList(
                 [
                     Downsample2D(
-                        out_channels, use_conv=True, out_channels=out_channels, padding=downsample_padding, name="op"
+                        out_channels, use_conv=True, out_channels=out_channels, use_conditioning_norm=use_conditioning_norm, padding=downsample_padding, name="op"
                     )
                 ]
             )
@@ -520,6 +533,7 @@ class CrossAttnUpBlock3D(nn.Module):
         attn_num_head_channels=1,
         cross_attention_dim=1280,
         output_scale_factor=1.0,
+        use_conditioning_norm=True,
         add_upsample=True,
         only_cross_attention=False,
         upcast_attention=False,
@@ -550,6 +564,7 @@ class CrossAttnUpBlock3D(nn.Module):
                     dropout=dropout,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    use_conditioning_norm=use_conditioning_norm
                 )
             )
             temp_convs.append(
@@ -599,7 +614,7 @@ class CrossAttnUpBlock3D(nn.Module):
         self.conditioning_attentions = nn.ModuleList(conditioning_attentions)
 
         if add_upsample:
-            self.upsamplers = nn.ModuleList([Upsample2D(out_channels, use_conv=True, out_channels=out_channels)])
+            self.upsamplers = nn.ModuleList([Upsample2D(out_channels, use_conv=True, out_channels=out_channels, use_conditioning_norm=use_conditioning_norm)])
         else:
             self.upsamplers = None
 
@@ -669,6 +684,7 @@ class UpBlock3D(nn.Module):
         resnet_groups: int = 32,
         resnet_pre_norm: bool = True,
         output_scale_factor=1.0,
+        use_conditioning_norm=True,
         add_upsample=True,
     ):
         super().__init__()
@@ -691,6 +707,7 @@ class UpBlock3D(nn.Module):
                     dropout=dropout,
                     output_scale_factor=output_scale_factor,
                     pre_norm=resnet_pre_norm,
+                    use_conditioning_norm=use_conditioning_norm
                 )
             )
             temp_convs.append(
@@ -705,7 +722,7 @@ class UpBlock3D(nn.Module):
         self.temp_convs = nn.ModuleList(temp_convs)
 
         if add_upsample:
-            self.upsamplers = nn.ModuleList([Upsample2D(out_channels, use_conv=True, out_channels=out_channels)])
+            self.upsamplers = nn.ModuleList([Upsample2D(out_channels, use_conv=True, out_channels=out_channels, use_conditioning_norm=use_conditioning_norm)])
         else:
             self.upsamplers = None
 
