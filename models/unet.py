@@ -100,6 +100,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         downsample_padding: int = 1,
         mid_block_scale_factor: float = 1,
         act_fn: str = "silu",
+        use_conditioning_norm: bool = True,
         norm_num_groups: Optional[int] = 32,
         norm_eps: float = 1e-5,
         cross_attention_dim: int = 1024,
@@ -130,7 +131,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         conv_out_kernel = 3
         conv_in_padding = (conv_in_kernel - 1) // 2
 
-        self.conv_in = Conditioner(in_channels, block_out_channels[0], kernel_size=conv_in_kernel, padding=conv_in_padding)
+        self.conv_in = Conditioner(in_channels, block_out_channels[0], use_conditioning_norm, kernel_size=conv_in_kernel, padding=conv_in_padding)
 
         # time
         time_embed_dim = block_out_channels[0] * 4
@@ -175,7 +176,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 resnet_groups=norm_num_groups,
                 cross_attention_dim=cross_attention_dim,
                 attn_num_head_channels=attention_head_dim[i],
-                downsample_padding=downsample_padding
+                downsample_padding=downsample_padding,
+                use_conditioning_norm=use_conditioning_norm
             )
             self.down_blocks.append(down_block)
 
@@ -187,7 +189,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             output_scale_factor=mid_block_scale_factor,
             cross_attention_dim=cross_attention_dim,
             attn_num_head_channels=attention_head_dim[-1],
-            resnet_groups=norm_num_groups
+            resnet_groups=norm_num_groups,
+            use_conditioning_norm=use_conditioning_norm
         )
 
         # count how many layers upsample the images
@@ -223,7 +226,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 resnet_eps=norm_eps,
                 resnet_groups=norm_num_groups,
                 cross_attention_dim=cross_attention_dim,
-                attn_num_head_channels=reversed_attention_head_dim[i]
+                attn_num_head_channels=reversed_attention_head_dim[i],
+                use_conditioning_norm=use_conditioning_norm
             )
             self.up_blocks.append(up_block)
             prev_output_channel = output_channel
@@ -239,7 +243,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             self.conv_act = None
 
         conv_out_padding = (conv_out_kernel - 1) // 2
-        self.conv_out = Conditioner(block_out_channels[0], out_channels, kernel_size=conv_out_kernel, padding=conv_out_padding)
+        self.conv_out = Conditioner(block_out_channels[0], out_channels, use_conditioning_norm, kernel_size=conv_out_kernel, padding=conv_out_padding)
 
     def set_attention_slice(self, slice_size):
         r"""
@@ -393,7 +397,8 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         h_emb = emb.repeat_interleave(repeats=num_frames, dim=0)
         c_emb = emb.repeat_interleave(repeats=num_frames_c, dim=0)
         
-        encoder_hidden_states = encoder_hidden_states.repeat_interleave(repeats=num_frames, dim=0)
+        if encoder_hidden_states is not None:
+            encoder_hidden_states = encoder_hidden_states.repeat_interleave(repeats=num_frames, dim=0)
 
         # 2. pre-process
         sample = sample.permute(0, 2, 1, 3, 4).reshape((sample.shape[0] * num_frames, -1) + sample.shape[3:])
@@ -430,7 +435,13 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                     cross_attention_kwargs=cross_attention_kwargs,
                 )
             else:
-                sample, res_samples, conditioning_hidden_states, res_conditioning_hidden_states = downsample_block(hidden_states=sample, conditioning_hidden_states=conditioning_hidden_states, h_emb=h_emb, c_emb=c_emb, num_frames=num_frames)
+                sample, res_samples, conditioning_hidden_states, res_conditioning_hidden_states = downsample_block(
+                    hidden_states=sample, 
+                    conditioning_hidden_states=conditioning_hidden_states, 
+                    h_emb=h_emb, 
+                    c_emb=c_emb, 
+                    num_frames=num_frames
+                )
 
             down_block_res_samples += res_samples
             down_block_res_conditioning_hidden_states += res_conditioning_hidden_states
