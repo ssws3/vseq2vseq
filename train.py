@@ -19,6 +19,7 @@ import wandb
 import random
 import numpy as np
 
+from tqdm import trange
 from PIL import Image
 from typing import Dict, List
 from omegaconf import OmegaConf
@@ -66,6 +67,24 @@ def tensor2img(image: torch.Tensor, mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5], f
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
     cv2.imwrite(file_name, image)
+
+def decode(pipe: TextToVideoSDPipeline, latents: torch.Tensor, batch_size: int = 32):
+    nf = latents.shape[2]
+    latents = rearrange(latents, "b c f h w -> (b f) c h w")
+
+    pixels = []
+    for idx in trange(
+        0, latents.shape[0], batch_size, desc="Decoding to pixels...", unit_scale=batch_size, unit="frame"
+    ):
+        latents_batch = latents[idx : idx + batch_size].to(pipe.device)
+        latents_batch = latents_batch.div(pipe.vae.config.scaling_factor)
+        pixels_batch = pipe.vae.decode(latents_batch).sample.cpu()
+        pixels.append(pixels_batch)
+    pixels = torch.cat(pixels)
+
+    pixels = rearrange(pixels, "(b f) c h w -> b c f h w", f=nf)
+
+    return pixels.float()
 
 def set_processors(attentions):
     for attn in attentions: attn.set_processor(AttnProcessor2_0()) 
@@ -466,10 +485,11 @@ def main(
 
                     with autocast():
                         pipeline = TextToVideoSDPipeline.from_pretrained(
-                            pretrained_3d_model_path,
-                            text_encoder=text_encoder,
-                            vae=vae,
-                            unet=unet
+                                pretrained_3d_model_path,
+                                text_encoder=text_encoder,
+                                vae=vae,
+                                unet=unet,
+                                scheduler=noise_scheduler
                         )
 
                         prompt = batch["text_prompt"][0] if len(sample_data.prompt) <= 0 else sample_data.prompt
@@ -478,38 +498,65 @@ def main(
 
                         out_file = f"{output_dir}/samples/{save_filename}.mp4"
 
-                        conditioning_hidden_states = None
-                        if not train_data.train_only_images:                                
-                            conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt").images[0]
-                            conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(sample_data.height, sample_data.width), mode='bilinear', align_corners=False).squeeze(0)
-                            
-                            img_file = f"{output_dir}/samples/{save_filename}.png"
-                            save_image(conditioning_hidden_states, img_file)
+                        conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt").images[0]
+                        conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(sample_data.height, sample_data.width), mode='bilinear', align_corners=False).squeeze(0)
+                        
+                        img_file = f"{output_dir}/samples/{save_filename}.png"
+                        save_image(conditioning_hidden_states, img_file)
 
-                            conditioning_hidden_states = conditioning_hidden_states.unsqueeze(0).unsqueeze(2)
+                        conditioning_hidden_states = conditioning_hidden_states.unsqueeze(0).unsqueeze(2)
 
                         with torch.no_grad():
-                            video_frames = pipeline(
-                                prompt,
-                                width=sample_data.width,
-                                height=sample_data.height,
-                                conditioning_hidden_states=conditioning_hidden_states,
-                                num_frames=sample_data.num_frames if not train_data.train_only_images else 1,
-                                num_inference_steps=sample_data.num_inference_steps,
-                                guidance_scale=sample_data.guidance_scale,
-                                output_type="pt" if train_data.train_only_images else "np"
-                            ).frames
+                            if train_data.train_only_images:
+                                image = pipeline(
+                                    prompt,
+                                    width=sample_data.width,
+                                    height=sample_data.height,
+                                    conditioning_hidden_states=None,
+                                    num_frames=1,
+                                    num_inference_steps=sample_data.num_inference_steps,
+                                    guidance_scale=sample_data.guidance_scale,
+                                    output_type="pt"
+                                ).frames[:, :, 0, :, :]
+
+                                img_file = f"{output_dir}/samples/{save_filename}-base.png"
+                                tensor2img(image, file_name=img_file)
+
+                                del image
+
+                            video_latents = []
+                            for t in range(0, sample_data.times):
+                                latents = pipeline(
+                                    prompt,
+                                    encode_to_latent=True if t == 0 else False,
+                                    width=sample_data.width,
+                                    height=sample_data.height,
+                                    conditioning_hidden_states=conditioning_hidden_states,
+                                    num_frames=sample_data.num_frames,
+                                    num_inference_steps=sample_data.num_inference_steps,
+                                    guidance_scale=sample_data.guidance_scale,
+                                    output_type="latent",
+                                    generator=torch.Generator().manual_seed(seed)
+                                ).frames
+                                
+                                video_latents.append(latents)
+                                
+                                random_slice = random.randint(train_data.min_conditioning_n_sample_frames, train_data.max_conditioning_n_sample_frames)
+                                conditioning_hidden_states = latents[:, :, -random_slice:, :, :]                                
                         
-                        if not train_data.train_only_images:
-                            export_to_video(video_frames, out_file, sample_data.fps)
-                        else:
-                            img_file = f"{output_dir}/samples/{save_filename}.png"
-                            tensor2img(video_frames[:, :, 0, :, :], file_name=img_file)
+                        video_latents = torch.cat(video_latents, dim=0)
+
+                        video_frames = decode(pipeline, video_latents)
+                        video_frames = torch.cat(torch.unbind(video_frames, dim=0), dim=1)
+
+                        video_frames = rearrange(video_frames, "c f h w -> f h w c").clamp(-1, 1).add(1).mul(127.5)
+                        video_frames = video_frames.byte().cpu().numpy()
+
+                        export_to_video(video_frames, out_file, sample_data.fps)
 
                         try:
-                            if not train_data.train_only_images:
-                                encode_video(out_file, encoded_out_file, get_video_height(out_file))
-                                os.remove(out_file)
+                            encode_video(out_file, encoded_out_file, get_video_height(out_file))
+                            os.remove(out_file)
                         except:
                             pass
                             
