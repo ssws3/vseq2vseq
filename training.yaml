@@ -47,7 +47,7 @@ train_data:
 
   trainable_modules:
   - "conditioning_conv"
-  - "conditioning_block"
+  #- "conditioning_block"
   - "conditioning_attentions"
   - "transformer_in"
   - "temp_attentions"
@@ -81,11 +81,14 @@ sample_data:
   # Fps rate for the sample video
   fps: 16
 
+  # How many times to continue video generation
+  times: 4
+
   # Number of inference steps when generating the video.
-  num_inference_steps: 25
+  num_inference_steps: 30
 
   # CFG scale
-  guidance_scale: 25
+  guidance_scale: 30
 
 # How many epochs to train for
 epochs: 1
