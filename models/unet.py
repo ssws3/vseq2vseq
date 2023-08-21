@@ -520,7 +520,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         if subfolder is not None:
             pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
 
-        model_3d = UNet3DConditionModel()
+        model_3d = UNet3DConditionModel(use_conditioning_norm=False)
 
         model_3d_old = os.path.join(pretrained_model_path, WEIGHTS_NAME)
         model_3d_old_state_dict = torch.load(model_3d_old, map_location="cpu")
