@@ -264,9 +264,7 @@ def diffuse(
     shape = (1, 4, num_frames, conditioning_hidden_states.shape[3], conditioning_hidden_states.shape[4])
 
     noisy_latents = torch.randn(shape, dtype=torch.half)
-
     noisy_latents = noisy_latents.to(device)
-    conditioning_hidden_states = conditioning_hidden_states.to(device)
 
     # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
     extra_step_kwargs = pipe.prepare_extra_step_kwargs(generator, eta)
