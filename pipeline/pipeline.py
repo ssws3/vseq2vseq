@@ -669,9 +669,7 @@ class TextToVideoSDPipeline(DiffusionPipeline, TextualInversionLoaderMixin, Lora
             conditioning_latents = conditioning_latents.repeat(batch_size, 1, 1, 1, 1)
 
         noisy_latents = torch.randn_like(latents)
-
         noisy_latents = noisy_latents.to(device)
-        conditioning_latents = conditioning_latents.to(device)
 
         # 6. Prepare extra step kwargs. TODO: Logic should ideally just be moved out of the pipeline
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
