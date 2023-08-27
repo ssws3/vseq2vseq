@@ -2,7 +2,7 @@
 pretrained_2d_model_path: "/home/polyware/stable-diffusion-xl-base-1.0"
 
 # Pretrained 3d diffusers model path.
-pretrained_3d_model_path: "/home/polyware/modelscope-seq2seq/outputs/base-6/train_2023-08-27T03-01-23/checkpoint-200"
+pretrained_3d_model_path: "/home/polyware/model_scope_diffusers"
 
 # Upgrade base modelscope model to new seq2seq model
 upgrade_model: True
