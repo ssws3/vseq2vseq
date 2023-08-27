@@ -10,7 +10,7 @@
     "optimizer": {
         "type": "AdamW",
         "params": {
-            "lr": 5e-5,
+            "lr": 1e-4,
             "betas": [0.9, 0.999],
             "eps": 1e-8,
             "weight_decay": 5e-8
@@ -32,7 +32,6 @@
     "gradient_accumulation_steps": 1,
     "gradient_clipping": 1.0,
     "steps_per_print": 10,
-    "train_batch_size": 64,
     "train_micro_batch_size_per_gpu": 32,
     "wall_clock_breakdown": false
 }

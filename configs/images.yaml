@@ -1,0 +1,156 @@
+# Pretrained 2d diffusers model path.
+pretrained_2d_model_path: "/home/polyware/stable-diffusion-xl-base-1.0"
+
+# Pretrained 3d diffusers model path.
+pretrained_3d_model_path: "/home/polyware/modelscope-seq2seq/outputs/base-6/train_2023-08-27T03-01-23/checkpoint-200"
+
+# Upgrade base modelscope model to new seq2seq model
+upgrade_model: True
+
+# Convert old seq2seq models to new format. Remember to set upgrade_model to False when doing this
+convert_model: False
+
+# Modules that should be present when upgrading/converting a model
+loaders:
+  # This is only valid when you upgrade the model
+  use_conditioning_norm: True # Trainable specific modules: conditioning_block
+
+  # This is only valid when you upgrade the model
+  use_conditioning_transformer: False # Trainable specific modules: .conditioning_attentions
+
+  # This is only valid when you upgrde the model
+  use_temp_conditioning_transformer: True # Trainable specific modules: temp_conditioning_attentions
+
+  # This is only valid when you upgrade the model
+  use_conditioning_in_transformers: False # Trainable specific modules: conditioning_transformer_in and/or temp_conditioning_transformer_in
+
+# The folder where your training outputs will be placed
+output_dir: "outputs/images"
+
+# Adds offset noise to training. Sese https://www.crosslabs.org/blog/diffusion-with-offset-noise
+offset_noise_strength: 0.1
+use_offset_noise: False
+
+# Training data parameters
+train_data:
+  # Learning rate for accelerator training script
+  learning_rate: 1e-4
+
+  # Betas for accelerator training script
+  betas: [0.9, 0.999]
+
+  # Eps for accelerator training script
+  eps: 1e-8
+
+  # Weight decay for accelerator training script
+  weight_decay: 0
+
+  # Cosine decay for accelerator training script
+  cosine_annealing_t_max: 100
+
+  # Batch size per gpu for accelerator training script
+  batch_size_per_gpu: 16
+
+  # The width and height in which you want your training data to be resized to.
+  width: 1152      
+  height: 640
+
+  # This will find the closest aspect ratio to your input width and height. 
+  # For example, 512x512 width and height with a video of resolution 1280x720 will be resized to 512x256
+  use_bucketing: True
+
+  # How many frames to step when sampling from the video  
+  frame_step: 2
+
+  # The total number of frames to sample, included the ones for the conditioning
+  n_sample_frames: 16
+
+  # Max frames to predict
+  n_max_frames: 8
+
+  # The minimum amount of conditioning frames to fetch from n_sample_frames
+  min_conditioning_n_sample_frames: 1
+
+  # The maximum amount of conditioning frames to fetch from n_sample_frames
+  max_conditioning_n_sample_frames: 8
+
+  # Should train only spatial_conv and .attentions layers
+  train_only_images: True
+
+  # If false file name will be the prompt, else the txt file
+  text_file_as_prompt: False
+
+  trainable_modules:
+  - "spatial_conv"
+  - ".attentions"
+
+  # Folder containing all videos (prompt should be the file name, _ are automatically replaced to space characters) (sub folders are checked as well)
+  path: "images"
+  
+  # Path to the deepspeed config file
+  deepspeed_config_file: "deepspeed/stage-2.json"
+
+# Validation data parameters.
+sample_data:
+  # A custom prompt that is different from your training dataset. 
+  prompt: ""
+
+  # The number of frames to sample during validation.
+  num_frames: 16
+
+  # Height and width of validation video
+  width: 1152
+  height: 640
+
+  # Height and width of validation sample image generator (not validation data video size), image gets resized to train_data width and height during diffusion
+  image_width: 1152
+  image_height: 640
+
+  # Fps rate for the sample video
+  fps: 16
+
+  # How many times to repeat the video
+  times: 1
+
+  # Number of inference steps when generating the video.
+  num_inference_steps: 30
+
+  # CFG scale
+  guidance_scale: 30
+
+# How many epochs to train for
+epochs: 1
+
+# How many steps to do before validating
+train_dataset_size: 0.99 # 99% for training data, 1% for validation data. Modify this according to how big your train dataset is
+
+# How many steps to do before validating
+validation_steps: 2000
+
+# Will remove past checkpoints if validation loss is improving
+save_only_best: True
+
+# If save_only_best is False, this will save the model every checkpointing_steps steps
+checkpointing_steps: 500
+
+# How many steps to do before sampling a preview
+sample_steps: 1000
+
+# Seed for training.
+seed: 42
+
+# Resume from checkpoint
+resume_from_checkpoint: False
+
+# Resume from step
+resume_step: 0
+
+# Trades VRAM usage for speed. You lose roughly 20% of training speed, but save a lot of VRAM.
+# If you need to save more VRAM, it can also be enabled for the text encoder, but reduces speed x2.
+gradient_checkpointing: True
+
+# Xformers must be installed for best memory savings and performance (< Pytorch 2.0)
+enable_xformers_memory_efficient_attention: False
+
+# Use scaled dot product attention (Only available with >= Torch 2.0)
+enable_torch_2_attn: True

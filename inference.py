@@ -17,7 +17,7 @@ import cv2
 from PIL import Image
 from compel import Compel
 from train import export_to_video, load_primary_models, handle_memory_attention
-from diffusers import TextToVideoSDPipeline, DiffusionPipeline
+from diffusers import TextToVideoSDPipeline, DiffusionPipeline, DPMSolverMultistepScheduler, UniPCMultistepScheduler
 from einops import rearrange
 from typing import Any, Callable, Dict, List, Optional, Union
 from einops import rearrange
@@ -28,20 +28,30 @@ from diffusers.utils import PIL_INTERPOLATION
 from diffusers import StableDiffusionLatentUpscalePipeline
 from einops import rearrange
 
-def normalize_contrast(clips):
-    # Compute the overall mean and standard deviation
-    overall_mean = torch.mean(torch.stack([torch.mean(clip) for clip in clips]))
-    overall_std = torch.mean(torch.stack([torch.std(clip) for clip in clips]))
+def average_contrast(video):
+    num_frames = video.shape[0]
+    avg_contrast = 0
 
-    # Normalize each clip
-    normalized_clips = []
-    for clip in clips:
-        clip_mean = torch.mean(clip)
-        clip_std = torch.std(clip)
-        normalized_clip = (clip - clip_mean) / clip_std * overall_std + overall_mean
-        normalized_clips.append(normalized_clip)
+    # Step 1: Calculate average contrast over all frames
+    for f in range(num_frames):
+        frame = cv2.cvtColor(video[f], cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+        avg_contrast += frame.std()
 
-    return normalized_clips
+    avg_contrast /= num_frames
+
+    # Step 2: Adjust contrast for each frame to match the average
+    output_video = np.zeros_like(video)
+    for f in range(num_frames):
+        frame = video[f]
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        current_contrast = gray_frame.std()
+        
+        alpha = avg_contrast / (current_contrast + 1e-6)  # Avoid division by zero
+        adjusted_frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=0)
+        
+        output_video[f] = adjusted_frame
+
+    return output_video
 
 def enhance_contrast_clahe_4d(tensor, clip_limit=1.2, tile_grid_size=(1,1), gamma=0.98):
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
@@ -138,7 +148,7 @@ def initialize_pipeline(
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
 
-        scheduler, tokenizer, text_encoder, vae, unet = load_primary_models(model, False)
+        scheduler, tokenizer, text_encoder, vae, unet = load_primary_models(model)
 
     pipe = TextToVideoSDPipeline.from_pretrained(
         pretrained_model_name_or_path=model,
@@ -148,6 +158,8 @@ def initialize_pipeline(
         vae=vae.to(device=device, dtype=torch.half),
         unet=unet.to(device=device, dtype=torch.half),
     )
+    #pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
+    #pipe.scheduler = UniPCMultistepScheduler.from_config(pipe.scheduler.config)
 
     vae.enable_slicing()
 
@@ -211,15 +223,6 @@ def decode(pipe: TextToVideoSDPipeline, latents: Tensor, batch_size: int = 8):
     pixels = rearrange(pixels, "(b f) c h w -> b c f h w", f=nf)
 
     return pixels.float()
-
-def primes_up_to(n):
-    sieve = np.ones(n // 3 + (n % 6 == 2), dtype=bool)
-    for i in range(1, int(n**0.5) // 3 + 1):
-        if sieve[i]:
-            k = 3 * i + 1 | 1
-            sieve[k * k // 3 :: 2 * k] = False
-            sieve[k * (k - 2 * (i & 1) + 4) // 3 :: 2 * k] = False
-    return np.r_[2, 3, ((3 * np.nonzero(sieve)[0][1:] + 1) | 1)]
 
 @torch.inference_mode()
 def diffuse(
@@ -338,7 +341,8 @@ def inference(
     min_conditioning_n_sample_frames: int = 1,
     max_conditioning_n_sample_frames: int = 8,
     save_init: bool = False,
-    upscale: bool = False
+    upscale: bool = False,
+    output_dir: str = "output"
 ):
     if seed is not None:
         set_seed(seed)
@@ -347,8 +351,9 @@ def inference(
         stable_diffusion_pipe = DiffusionPipeline.from_pretrained(model_2d, torch_dtype=torch.float16).to(device)
         conditioning_hidden_states = stable_diffusion_pipe(prompt=prompt, negative_prompt=negative_prompt, width=image_width, height=image_height, guidance_scale=image_guidance_scale, output_type="pt").images[0]
         if (save_init):
+            os.makedirs(output_dir, exist_ok=True)
             unique_id = str(uuid4())[:8]
-            save_image(conditioning_hidden_states, f"output/{prompt}-{unique_id}.png")
+            save_image(conditioning_hidden_states, f"{output_dir}/{prompt}-{unique_id}.png")
         conditioning_hidden_states = conditioning_hidden_states.unsqueeze(0)
         conditioning_hidden_states = F.interpolate(conditioning_hidden_states, size=(height, width), mode='bilinear', align_corners=False)
         conditioning_hidden_states = conditioning_hidden_states.unsqueeze(2)
@@ -415,16 +420,10 @@ def inference(
         else:
             video_latents = torch.cat(video_latents, dim=0)
 
+        # decode latents to pixel space
         videos = decode(pipe, video_latents, vae_batch_size)
-        videos = normalize_contrast(videos)
 
-    unbound_clips = torch.unbind(torch.stack(videos, dim=0), dim=0)
-    tensor_of_clips = torch.stack(videos, dim=0)
-    
-    unbound_clips = torch.unbind(tensor_of_clips, dim=0)
-    concatenated_clips = torch.cat(unbound_clips, dim=1)
-
-    return concatenated_clips
+    return torch.cat(torch.unbind(videos, dim=0), dim=1)
 
 if __name__ == "__main__":
     import decord
@@ -437,20 +436,20 @@ if __name__ == "__main__":
     parser.add_argument("-p", "--prompt", type=str, required=True, help="Text prompt to condition on")
     parser.add_argument("-o", "--output-dir", type=str, default="./output", help="Directory to save output video to")
     parser.add_argument("-n", "--negative-prompt", type=str, default=None, help="Text prompt to condition against")
-    parser.add_argument("-T", "--num-frames", type=int, default=16, help="Total number of frames to generate")
+    parser.add_argument("-T", "--num-frames", type=int, default=8, help="Total number of frames to generate")
     parser.add_argument("-CN", "--min_conditioning_n_sample_frames", type=int, default=1, help="Total number of frames to sample for conditioning after initial video")
-    parser.add_argument("-CX", "--max_conditioning_n_sample_frames", type=int, default=4, help="Total number of frames to sample for conditioning after initial video")
-    parser.add_argument("-WI", "--width", type=int, default=512, help="Width of the video to generate (if init image is not provided)")
-    parser.add_argument("-HI", "--height", type=int, default=512, help="Height of the video (if init image is not provided)")
+    parser.add_argument("-CX", "--max_conditioning_n_sample_frames", type=int, default=8, help="Total number of frames to sample for conditioning after initial video")
+    parser.add_argument("-WI", "--width", type=int, default=576, help="Width of the video to generate (if init image is not provided)")
+    parser.add_argument("-HI", "--height", type=int, default=320, help="Height of the video (if init image is not provided)")
     parser.add_argument("-IW", "--image-width", type=int, default=None, help="Width of the image to generate (if init image is not provided)")
     parser.add_argument("-IH", "--image-height", type=int, default=None, help="Height of the image (if init image is not provided)")
     parser.add_argument("-MP", "--model-2d", type=str, default="stabilityai/stable-diffusion-2-1", help="Path to the model for image generation (if init image is not provided)")
     parser.add_argument("-i", "--init-image", type=str, default=None, help="Path to initial image to use")
     parser.add_argument("-VB", "--vae-batch-size", type=int, default=16, help="Batch size for VAE encoding/decoding to/from latents (higher values = faster inference, but more memory usage).")
     parser.add_argument("-s", "--num-steps", type=int, default=25, help="Number of diffusion steps to run per frame.")
-    parser.add_argument("-g", "--guidance-scale", type=float, default=14, help="Scale for guidance loss (higher values = more guidance, but possibly more artifacts).")
-    parser.add_argument("-IG", "--image-guidance-scale", type=float, default=7.5, help="Scale for guidance loss for 2d model (higher values = more guidance, but possibly more artifacts).")
-    parser.add_argument("-f", "--fps", type=int, default=12, help="FPS of output video")
+    parser.add_argument("-g", "--guidance-scale", type=float, default=30, help="Scale for guidance loss (higher values = more guidance, but possibly more artifacts).")
+    parser.add_argument("-IG", "--image-guidance-scale", type=float, default=12.5, help="Scale for guidance loss for 2d model (higher values = more guidance, but possibly more artifacts).")
+    parser.add_argument("-f", "--fps", type=int, default=16, help="FPS of output video")
     parser.add_argument("-d", "--device", type=str, default="cuda", help="Device to run inference on (defaults to cuda).")
     parser.add_argument("-x", "--xformers", action="store_true", help="Use XFormers attnetion, a memory-efficient attention implementation (requires `pip install xformers`).")
     parser.add_argument("-S", "--sdp", action="store_true", help="Use SDP attention, PyTorch's built-in memory-efficient attention implementation.")
@@ -511,7 +510,8 @@ if __name__ == "__main__":
         sdp=args.sdp,
         times=args.times,
         save_init=args.save_init,
-        upscale=args.upscale
+        upscale=args.upscale,
+        output_dir=args.output_dir
     )
 
     # =========================================
@@ -523,6 +523,7 @@ if __name__ == "__main__":
         video = rearrange(video, "c f h w -> f h w c").clamp(-1, 1).add(1).mul(127.5)
         video = video.byte().cpu().numpy()
 
+        video = average_contrast(video)
         video = enhance_contrast_clahe_4d(video)
 
         unique_id = str(uuid4())[:8]

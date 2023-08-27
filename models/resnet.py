@@ -17,8 +17,8 @@ class Conditioner(nn.Module):
         hidden_states = self.spatial_conv(hidden_states)
 
         conditioning_hidden_states = self.conditioning_conv(conditioning_hidden_states)
-        
-        if self.conditioning_block:
+
+        if self.conditioning_block: 
             hidden_states = self.conditioning_block(hidden_states, conditioning_hidden_states, num_frames) if num_frames > 1 else hidden_states
 
         return hidden_states, conditioning_hidden_states

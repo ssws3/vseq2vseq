@@ -177,7 +177,6 @@ class Transformer2DModel(ModelMixin, ConfigMixin):
 class TransformerTemporalModelOutput(BaseOutput):
     sample: torch.FloatTensor
 
-
 class TransformerTemporalModel(ModelMixin, ConfigMixin):
     @register_to_config
     def __init__(
@@ -277,10 +276,126 @@ class TransformerTemporalModel(ModelMixin, ConfigMixin):
         return TransformerTemporalModelOutput(sample=output)
 
 @dataclass
-class ConditionalTransformerOutput(BaseOutput):
+class TransformerConditioningOutput(BaseOutput):
     sample: torch.FloatTensor
 
-class ConditionalTransformerModel(ModelMixin, ConfigMixin):
+class TransformerConditioningModel(ModelMixin, ConfigMixin):
+    @register_to_config
+    def __init__(
+        self,
+        num_attention_heads: int = 16,
+        attention_head_dim: int = 88,
+        in_channels: Optional[int] = None,
+        out_channels: Optional[int] = None,
+        num_layers: int = 1,
+        dropout: float = 0.0,
+        norm_num_groups: int = 32,
+        cross_attention_dim: Optional[int] = None,
+        attention_bias: bool = False,
+        activation_fn: str = "geglu",
+        num_embeds_ada_norm: Optional[int] = None,
+        only_cross_attention: bool = False,
+        upcast_attention: bool = False,
+        norm_type: str = "layer_norm",
+        norm_elementwise_affine: bool = True,
+    ):
+        super().__init__()
+
+        self.num_attention_heads = num_attention_heads
+        self.attention_head_dim = attention_head_dim
+        inner_dim = num_attention_heads * attention_head_dim
+
+        if norm_type == "layer_norm" and num_embeds_ada_norm is not None:
+            deprecation_message = (
+                f"The configuration file of this model: {self.__class__} is outdated. `norm_type` is either not set or"
+                " incorrectly set to `'layer_norm'`.Make sure to set `norm_type` to `'ada_norm'` in the config."
+                " Please make sure to update the config accordingly as leaving `norm_type` might led to incorrect"
+                " results in future versions. If you have downloaded this checkpoint from the Hugging Face Hub, it"
+                " would be very nice if you could open a Pull request for the `transformer/config.json` file"
+            )
+            norm_type = "ada_norm"
+
+        self.norm = torch.nn.GroupNorm(num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+        self.proj_in = nn.Linear(in_channels, inner_dim)
+
+        self.cond_norm = torch.nn.GroupNorm(num_groups=norm_num_groups, num_channels=in_channels, eps=1e-6, affine=True)
+        self.cond_proj_in = nn.Linear(in_channels, inner_dim)
+
+        self.transformer_blocks = nn.ModuleList(
+            [
+                BasicTransformerBlock(
+                    inner_dim,
+                    num_attention_heads,
+                    attention_head_dim,
+                    dropout=dropout,
+                    cross_attention_dim=inner_dim,
+                    activation_fn=activation_fn,
+                    num_embeds_ada_norm=num_embeds_ada_norm,
+                    attention_bias=attention_bias,
+                    only_cross_attention=only_cross_attention,
+                    upcast_attention=upcast_attention,
+                    norm_type=norm_type,
+                    norm_elementwise_affine=norm_elementwise_affine,
+                )
+                for d in range(num_layers)
+            ]
+        )
+
+        self.proj_out = nn.Linear(inner_dim, in_channels)
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        conditioning_hidden_states: Optional[torch.Tensor] = None,
+        num_frames: int = 16,
+        return_dict: bool = True
+    ):
+        batch_frames_h, channel_h, height_h, width_h = hidden_states.shape
+        batch_frames_c, channel_c, height_c, width_c = conditioning_hidden_states.shape
+
+        batch_h = batch_frames_h // num_frames
+        hidden_states = rearrange(hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames)
+
+        num_frames_c = batch_frames_c // batch_h
+        conditioning_hidden_states = rearrange(conditioning_hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames_c)
+        conditioning_hidden_states = conditioning_hidden_states[:, :, -1:, :, :].repeat(1, 1, num_frames, 1, 1)
+        
+        residual = hidden_states
+
+        hidden_states = self.norm(hidden_states)
+        conditioning_hidden_states = self.cond_norm(hidden_states)
+
+        hidden_states = rearrange(hidden_states, 'b c f h w -> (b f) (h w) c', b=batch_h, f=num_frames, h=height_h, w=width_h, c=channel_h)
+        conditioning_hidden_states = rearrange(conditioning_hidden_states, 'b c f h w -> (b f) (h w) c', b=batch_h, f=num_frames, h=height_c, w=width_c, c=channel_c)
+
+        hidden_states = self.proj_in(hidden_states)
+        conditioning_hidden_states = self.cond_proj_in(conditioning_hidden_states)
+
+        for i, block in enumerate(self.transformer_blocks):
+            hidden_states = block(
+                hidden_states,
+                encoder_hidden_states=conditioning_hidden_states,
+                encoder_attention_mask=None
+            )
+
+        hidden_states = self.proj_out(hidden_states)        
+        hidden_states = rearrange(hidden_states, "(b f) (h w) c -> b c f h w", b=batch_h, c=channel_h, f=num_frames, h=height_h, w=width_h)
+
+        hidden_states += residual
+        hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
+
+        output = hidden_states
+
+        if not return_dict:
+            return (output, )
+
+        return TransformerConditioningOutput(sample=output)
+
+@dataclass
+class TransformerTemporalConditioningOutput(BaseOutput):
+    sample: torch.FloatTensor
+
+class TransformerTemporalConditioningModel(ModelMixin, ConfigMixin):
     @register_to_config
     def __init__(
         self,
@@ -407,4 +522,4 @@ class ConditionalTransformerModel(ModelMixin, ConfigMixin):
         if not return_dict:
             return (output, )
 
-        return ConditionalTransformerOutput(sample=output)
+        return TransformerTemporalConditioningOutput(sample=output)

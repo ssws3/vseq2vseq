@@ -13,9 +13,11 @@
 # limitations under the License.
 
 import torch
+
 from torch import nn
+from itertools import zip_longest
 from .resnet import TemporalConvLayer, Downsample2D, ResnetBlock2D, Upsample2D
-from .transformers import Transformer2DModel, TransformerTemporalModel, ConditionalTransformerModel
+from .transformers import Transformer2DModel, TransformerTemporalModel, TransformerConditioningModel, TransformerTemporalConditioningModel
 
 def get_down_block(
     down_block_type,
@@ -27,6 +29,8 @@ def get_down_block(
     resnet_eps,
     attn_num_head_channels,
     use_conditioning_norm=True,
+    use_conditioning_transformer=False,
+    use_temp_conditioning_transformer=True,
     resnet_groups=None,
     cross_attention_dim=None,
     downsample_padding=None,
@@ -61,7 +65,9 @@ def get_down_block(
             attn_num_head_channels=attn_num_head_channels,
             only_cross_attention=only_cross_attention,
             upcast_attention=upcast_attention,
-            use_conditioning_norm=use_conditioning_norm
+            use_conditioning_norm=use_conditioning_norm,
+            use_conditioning_transformer=use_conditioning_transformer,
+            use_temp_conditioning_transformer=use_temp_conditioning_transformer
         )
     raise ValueError(f"{down_block_type} does not exist.")
 
@@ -76,6 +82,8 @@ def get_up_block(
     resnet_eps,
     attn_num_head_channels,
     use_conditioning_norm=True,
+    use_conditioning_transformer=False,
+    use_temp_conditioning_transformer=True,
     resnet_groups=None,
     cross_attention_dim=None,
     only_cross_attention=False,
@@ -109,7 +117,9 @@ def get_up_block(
             attn_num_head_channels=attn_num_head_channels,
             only_cross_attention=only_cross_attention,
             upcast_attention=upcast_attention,
-            use_conditioning_norm=use_conditioning_norm
+            use_conditioning_norm=use_conditioning_norm,
+            use_conditioning_transformer=use_conditioning_transformer,
+            use_temp_conditioning_transformer=use_temp_conditioning_transformer
         )
     raise ValueError(f"{up_block_type} does not exist.")
 
@@ -127,6 +137,8 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         output_scale_factor=1.0,
         cross_attention_dim=1280,
         use_conditioning_norm=True,
+        use_conditioning_transformer=False,
+        use_temp_conditioning_transformer=True,
         upcast_attention=False,
     ):
         super().__init__()
@@ -158,8 +170,9 @@ class UNetMidBlock3DCrossAttn(nn.Module):
             )
         ]
         attentions = []
-        temp_attentions = []
         conditioning_attentions = []
+        temp_attentions = []
+        temp_conditioning_attentions = []
 
         for _ in range(num_layers):
             attentions.append(
@@ -173,6 +186,17 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     upcast_attention=upcast_attention,
                 )
             )
+            if use_conditioning_transformer:
+                conditioning_attentions.append(
+                    TransformerConditioningModel(
+                        in_channels // attn_num_head_channels,
+                        attn_num_head_channels,
+                        in_channels=in_channels,
+                        num_layers=1,
+                        norm_num_groups=resnet_groups,
+                        only_cross_attention=True
+                    )
+                )
             temp_attentions.append(
                 TransformerTemporalModel(
                     in_channels // attn_num_head_channels,
@@ -183,16 +207,17 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     norm_num_groups=resnet_groups,
                 )
             )
-            conditioning_attentions.append(
-                ConditionalTransformerModel(
-                    in_channels // attn_num_head_channels,
-                    attn_num_head_channels,
-                    in_channels=in_channels,
-                    num_layers=1,
-                    norm_num_groups=resnet_groups,
-                    only_cross_attention=True
+            if use_temp_conditioning_transformer:
+                temp_conditioning_attentions.append(
+                    TransformerTemporalConditioningModel(
+                        in_channels // attn_num_head_channels,
+                        attn_num_head_channels,
+                        in_channels=in_channels,
+                        num_layers=1,
+                        norm_num_groups=resnet_groups,
+                        only_cross_attention=True
+                    )
                 )
-            )
             resnets.append(
                 ResnetBlock2D(
                     in_channels=in_channels,
@@ -217,8 +242,9 @@ class UNetMidBlock3DCrossAttn(nn.Module):
         self.resnets = nn.ModuleList(resnets)
         self.temp_convs = nn.ModuleList(temp_convs)
         self.attentions = nn.ModuleList(attentions)
-        self.temp_attentions = nn.ModuleList(temp_attentions)
         self.conditioning_attentions = nn.ModuleList(conditioning_attentions)
+        self.temp_attentions = nn.ModuleList(temp_attentions)
+        self.temp_conditioning_attentions = nn.ModuleList(temp_conditioning_attentions)
 
     def forward(
         self,
@@ -244,8 +270,8 @@ class UNetMidBlock3DCrossAttn(nn.Module):
             hidden_states, conditioning_hidden_states = self.resnets[0](hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
             hidden_states = self.temp_convs[0](hidden_states, num_frames) if num_frames > 1 else hidden_states
             
-        for attn, temp_attn, cond_attn, resnet, temp_conv in zip(
-            self.attentions, self.temp_attentions, self.conditioning_attentions, self.resnets[1:], self.temp_convs[1:]
+        for attn, cond_attn, temp_attn, temp_cond_attn, resnet, temp_conv in zip_longest(
+            self.attentions, self.conditioning_attentions, self.temp_attentions, self.temp_conditioning_attentions, self.resnets[1:], self.temp_convs[1:]
         ):
             if self.gradient_checkpointing:
                 def create_custom_forward(module, return_dict=None):
@@ -258,14 +284,28 @@ class UNetMidBlock3DCrossAttn(nn.Module):
                     return custom_forward
                 
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
+
+                if cond_attn:
+                    hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+
+                if temp_cond_attn:
+                    hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
             else:
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states,cross_attention_kwargs=cross_attention_kwargs,).sample
+
+                if cond_attn:
+                    hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+
                 hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
-                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+
+                if temp_cond_attn:
+                    hidden_states = temp_cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states    
 
@@ -288,6 +328,8 @@ class CrossAttnDownBlock3D(nn.Module):
         output_scale_factor=1.0,
         downsample_padding=1,
         use_conditioning_norm=False,
+        use_conditioning_transformer=False,
+        use_temp_conditioning_transformer=True,
         add_downsample=True,
         only_cross_attention=False,
         upcast_attention=False,
@@ -296,8 +338,9 @@ class CrossAttnDownBlock3D(nn.Module):
 
         resnets = []
         attentions = []
-        temp_attentions = []
         conditioning_attentions = []
+        temp_attentions = []
+        temp_conditioning_attentions = []
         temp_convs = []
 
         self.gradient_checkpointing = False
@@ -338,6 +381,17 @@ class CrossAttnDownBlock3D(nn.Module):
                     upcast_attention=upcast_attention,
                 )
             )
+            if use_conditioning_transformer:
+                conditioning_attentions.append(
+                    TransformerConditioningModel(
+                        out_channels // attn_num_head_channels,
+                        attn_num_head_channels,
+                        in_channels=out_channels,
+                        num_layers=1,
+                        norm_num_groups=resnet_groups,
+                        only_cross_attention=True
+                    )
+                )
             temp_attentions.append(
                 TransformerTemporalModel(
                     out_channels // attn_num_head_channels,
@@ -348,21 +402,23 @@ class CrossAttnDownBlock3D(nn.Module):
                     norm_num_groups=resnet_groups,
                 )
             )
-            conditioning_attentions.append(
-                ConditionalTransformerModel(
-                    out_channels // attn_num_head_channels,
-                    attn_num_head_channels,
-                    in_channels=out_channels,
-                    num_layers=1,
-                    norm_num_groups=resnet_groups,
-                    only_cross_attention=True
+            if use_temp_conditioning_transformer:
+                temp_conditioning_attentions.append(
+                    TransformerTemporalConditioningModel(
+                        out_channels // attn_num_head_channels,
+                        attn_num_head_channels,
+                        in_channels=out_channels,
+                        num_layers=1,
+                        norm_num_groups=resnet_groups,
+                        only_cross_attention=True
+                    )
                 )
-            )
         self.resnets = nn.ModuleList(resnets)
         self.temp_convs = nn.ModuleList(temp_convs)
         self.attentions = nn.ModuleList(attentions)
-        self.temp_attentions = nn.ModuleList(temp_attentions)
         self.conditioning_attentions = nn.ModuleList(conditioning_attentions)
+        self.temp_attentions = nn.ModuleList(temp_attentions)
+        self.temp_conditioning_attentions = nn.ModuleList(temp_conditioning_attentions)
 
         if add_downsample:
             self.downsamplers = nn.ModuleList(
@@ -389,8 +445,8 @@ class CrossAttnDownBlock3D(nn.Module):
         output_states = ()
         image_output_states = ()
 
-        for resnet, temp_conv, attn, temp_attn, cond_attn in zip(
-            self.resnets, self.temp_convs, self.attentions, self.temp_attentions, self.conditioning_attentions
+        for resnet, temp_conv, attn, cond_attn, temp_attn, temp_cond_attn in zip_longest(
+            self.resnets, self.temp_convs, self.attentions, self.conditioning_attentions, self.temp_attentions, self.temp_conditioning_attentions
         ):
         
             if self.gradient_checkpointing:
@@ -406,14 +462,26 @@ class CrossAttnDownBlock3D(nn.Module):
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
+
+                if cond_attn:
+                    hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+
+                if temp_cond_attn:
+                    hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
             else:
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs,).sample
+
+                if cond_attn:
+                    hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+
                 hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
-                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+
+                if temp_cond_attn:
+                    hidden_states = temp_cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
 
             output_states += (hidden_states,)
             image_output_states += (conditioning_hidden_states,)
@@ -536,6 +604,8 @@ class CrossAttnUpBlock3D(nn.Module):
         use_conditioning_norm=True,
         add_upsample=True,
         only_cross_attention=False,
+        use_conditioning_transformer=False,
+        use_temp_conditioning_transformer=True,
         upcast_attention=False,
     ):
         super().__init__()
@@ -543,8 +613,9 @@ class CrossAttnUpBlock3D(nn.Module):
         resnets = []
         temp_convs = []
         attentions = []
-        temp_attentions = []
         conditioning_attentions = []
+        temp_attentions = []
+        temp_conditioning_attentions = []
 
         self.gradient_checkpointing = False
         self.has_cross_attention = True
@@ -586,6 +657,17 @@ class CrossAttnUpBlock3D(nn.Module):
                     upcast_attention=upcast_attention,
                 )
             )
+            if use_conditioning_transformer:
+                conditioning_attentions.append(
+                    TransformerConditioningModel(
+                        out_channels // attn_num_head_channels,
+                        attn_num_head_channels,
+                        in_channels=out_channels,
+                        num_layers=1,
+                        norm_num_groups=resnet_groups,
+                        only_cross_attention=True
+                    )
+                )
             temp_attentions.append(
                 TransformerTemporalModel(
                     out_channels // attn_num_head_channels,
@@ -596,22 +678,24 @@ class CrossAttnUpBlock3D(nn.Module):
                     norm_num_groups=resnet_groups,
                 )
             )
-            conditioning_attentions.append(
-                ConditionalTransformerModel(
-                    out_channels // attn_num_head_channels,
-                    attn_num_head_channels,
-                    in_channels=out_channels,
-                    num_layers=1,
-                    norm_num_groups=resnet_groups,
-                    only_cross_attention=True
+            if use_temp_conditioning_transformer:
+                temp_conditioning_attentions.append(
+                    TransformerTemporalConditioningModel(
+                        out_channels // attn_num_head_channels,
+                        attn_num_head_channels,
+                        in_channels=out_channels,
+                        num_layers=1,
+                        norm_num_groups=resnet_groups,
+                        only_cross_attention=True
+                    )
                 )
-            )
 
         self.resnets = nn.ModuleList(resnets)
         self.temp_convs = nn.ModuleList(temp_convs)
         self.attentions = nn.ModuleList(attentions)
-        self.temp_attentions = nn.ModuleList(temp_attentions)
         self.conditioning_attentions = nn.ModuleList(conditioning_attentions)
+        self.temp_attentions = nn.ModuleList(temp_attentions)
+        self.temp_conditioning_attentions = nn.ModuleList(temp_conditioning_attentions)
 
         if add_upsample:
             self.upsamplers = nn.ModuleList([Upsample2D(out_channels, use_conv=True, out_channels=out_channels, use_conditioning_norm=use_conditioning_norm)])
@@ -632,8 +716,8 @@ class CrossAttnUpBlock3D(nn.Module):
         num_frames=1,
         cross_attention_kwargs=None,
     ):
-        for resnet, temp_conv, attn, temp_attn, cond_attn in zip(
-            self.resnets, self.temp_convs, self.attentions, self.temp_attentions, self.conditioning_attentions
+        for resnet, temp_conv, attn, cond_attn, temp_attn, temp_cond_attn in zip_longest(
+            self.resnets, self.temp_convs, self.attentions, self.conditioning_attentions, self.temp_attentions, self.temp_conditioning_attentions
         ):
             res_hidden_states = res_hidden_states_tuple[-1]
             res_hidden_states_tuple = res_hidden_states_tuple[:-1]
@@ -656,14 +740,26 @@ class CrossAttnUpBlock3D(nn.Module):
                 hidden_states, conditioning_hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(resnet), hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames)
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_conv), hidden_states, num_frames) if num_frames > 1 else hidden_states
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(attn, return_dict=False), hidden_states, encoder_hidden_states,)[0]
+
+                if cond_attn:
+                    hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+
                 hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_attn, return_dict=False), hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
-                hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
+
+                if temp_cond_attn:
+                    hidden_states = torch.utils.checkpoint.checkpoint(create_custom_forward(temp_cond_attn, return_dict=False), hidden_states, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else hidden_states
             else:
                 hidden_states, conditioning_hidden_states = resnet(hidden_states, conditioning_hidden_states, h_emb, c_emb, num_frames=num_frames)
                 hidden_states = temp_conv(hidden_states, num_frames=num_frames) if num_frames > 1 else hidden_states
                 hidden_states = attn(hidden_states, encoder_hidden_states=encoder_hidden_states, cross_attention_kwargs=cross_attention_kwargs,).sample
+
+                if cond_attn:
+                    hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+
                 hidden_states = temp_attn(hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
-                hidden_states = cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
+
+                if temp_cond_attn:
+                    hidden_states = temp_cond_attn(hidden_states, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else hidden_states
 
         if self.upsamplers is not None:
             for upsampler in self.upsamplers:
