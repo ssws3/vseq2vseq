@@ -44,15 +44,15 @@ class ConditionalNorm(nn.Module):
         nn.init.zeros_(self.beta[0].bias)
 
     def forward(self, x, y):
-        batch, _, _, height, width = y.shape
+        batch, channel, frames, height, width = y.shape
 
-        y = rearrange(y, "b c f h w -> (b h w) f c")
+        y = rearrange(y, "b c f h w -> (b f) (h w) c")
 
         gamma = self.gamma(y)
         beta = self.beta(y)
 
-        gamma = rearrange(gamma, "(b h w) f c -> b c f h w", b=batch, h=height, w=width)
-        beta = rearrange(beta, "(b h w) f c -> b c f h w", b=batch, h=height, w=width)
+        gamma = rearrange(gamma, "(b f) (h w) c -> b c f h w", b=batch, c=channel, f=frames, h=height, w=width)
+        beta = rearrange(beta, "(b f) (h w) c -> b c f h w", b=batch, c=channel, f=frames, h=height, w=width)
 
         return gamma * x + beta
     
