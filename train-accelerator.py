@@ -540,8 +540,8 @@ def main(
                                     image = pipeline(
                                         prompt,
                                         encode_to_latent=True,
-                                        width=sample_data.image_width,
-                                        height=sample_data.image_height,
+                                        width=sample_data.width,
+                                        height=sample_data.height,
                                         conditioning_hidden_states=conditioning_hidden_states,
                                         num_frames=1,
                                         num_inference_steps=sample_data.num_inference_steps,
