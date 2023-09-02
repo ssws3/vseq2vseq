@@ -1,5 +1,5 @@
-# modelscope-seq2seq
-Variable length frame conditioning on modelscope text to video model
+# vseq2vseq
+Variable length frame conditioning for infinite length video generation
 
 TODO
 
