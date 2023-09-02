@@ -358,7 +358,22 @@ class TransformerConditioningModel(ModelMixin, ConfigMixin):
 
         num_frames_c = batch_frames_c // batch_h
         conditioning_hidden_states = rearrange(conditioning_hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames_c)
-        conditioning_hidden_states = conditioning_hidden_states[:, :, -1:, :, :].repeat(1, 1, num_frames, 1, 1)
+
+        # Determine if padding is needed
+        padding_frames = num_frames - num_frames_c
+        if padding_frames > 0:
+            # Pad the start of conditioning_hidden_stštes with zeros
+            padding_shape = (batch_h, channel_c, padding_frames, height_c, width_c)
+            padding_tensor = torch.zeros(padding_shape, device=conditioning_hidden_states.device)
+            conditioning_hidden_states = torch.cat([padding_tensor, conditioning_hidden_states], dim=2)
+
+            # Create attention mask with 1 for padding and 0 for actual content
+            conditioning_attention_mask = torch.cat([torch.ones(batch_h * padding_frames, height_c * width_c), torch.zeros(batch_h * num_frames_c, height_c * width_c)], dim=0)
+
+            conditioning_attention_mask = (1 - conditioning_attention_mask.to(conditioning_hidden_states.dtype)) * -10000.0
+            conditioning_attention_mask = conditioning_attention_mask.unsqueeze(1).to(conditioning_hidden_states.device)
+        else:
+            conditioning_attention_mask = None
         
         residual = hidden_states
 

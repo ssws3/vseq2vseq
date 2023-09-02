@@ -40,7 +40,45 @@ from diffusers.utils import export_to_video
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.models.attention import BasicTransformerBlock
 from diffusers.models.attention_processor import AttnProcessor2_0
-from torch.nn.functional import cosine_similarity
+
+def average_contrast(video):
+    num_frames = video.shape[0]
+    avg_contrast = 0
+
+    # Step 1: Calculate average contrast over all frames
+    for f in range(num_frames):
+        frame = cv2.cvtColor(video[f], cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+        avg_contrast += frame.std()
+
+    avg_contrast /= num_frames
+
+    # Step 2: Adjust contrast for each frame to match the average
+    output_video = np.zeros_like(video)
+    for f in range(num_frames):
+        frame = video[f]
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        current_contrast = gray_frame.std()
+        
+        alpha = avg_contrast / (current_contrast + 1e-6)  # Avoid division by zero
+        adjusted_frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=0)
+        
+        output_video[f] = adjusted_frame
+
+    return output_video
+
+def enhance_contrast_clahe_4d(tensor, clip_limit=1.2, tile_grid_size=(1,1), gamma=0.98):
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    
+    output = np.empty_like(tensor)
+
+    for f in range(tensor.shape[0]):
+        for c in range(tensor.shape[3]):
+            enhanced_frame = clahe.apply(tensor[f, :, :, c])
+            enhanced_frame = np.power(enhanced_frame, gamma)
+            enhanced_frame = np.clip(enhanced_frame, 0, 255)
+            output[f, :, :, c] = enhanced_frame
+
+    return output
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -215,15 +253,13 @@ def create_output_folders(output_dir, config):
 
     return out_dir
 
-def load_primary_models(pretrained_model_path, upgrade_model=False, convert_model=False, loaders=None):
+def load_primary_models(pretrained_model_path, upgrade_model=False, loaders=None):
     noise_scheduler = DDIMScheduler.from_pretrained(pretrained_model_path, subfolder="scheduler")
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_path, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(pretrained_model_path, subfolder="text_encoder")
     vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
     if upgrade_model:
         unet = UNet3DConditionModel.from_pretrained_3d(pretrained_model_path, loaders, subfolder="unet")
-    elif convert_model:
-        unet = UNet3DConditionModel.convert(pretrained_model_path, loaders, subfolder="unet")
     else:
         unet = UNet3DConditionModel.from_pretrained(pretrained_model_path, subfolder="unet")
 
@@ -242,7 +278,7 @@ def tensor_to_vae_latent(t, vae):
 
     latents = vae.encode(t).latent_dist.sample()
     latents = rearrange(latents, "(b f) c h w -> b c f h w", f=video_length)
-    latents = latents * 0.18215
+    latents = latents * vae.config.scaling_factor
 
     return latents
 
@@ -312,7 +348,6 @@ def main(
     pretrained_3d_model_path: str,
     pretrained_2d_model_path: str,
     upgrade_model: bool,
-    convert_model: bool,
     loaders: Dict,
     output_dir: str,
     train_data: Dict,
@@ -360,7 +395,7 @@ def main(
         
         output_dir = create_output_folders(output_dir, config)
         
-    noise_scheduler, tokenizer, text_encoder, vae, unet = load_primary_models(pretrained_3d_model_path, upgrade_model, convert_model, loaders)
+    noise_scheduler, tokenizer, text_encoder, vae, unet = load_primary_models(pretrained_3d_model_path, upgrade_model, loaders)
 
     optimizer = AdamW(unet.parameters(), lr=train_data.learning_rate, betas=train_data.betas, eps=train_data.eps, weight_decay=train_data.weight_decay)
     scheduler = CosineAnnealingLR(optimizer, T_max=train_data.cosine_annealing_t_max)
@@ -378,7 +413,7 @@ def main(
 
     if train_data.train_only_images:
         train_data.n_sample_frames = 1
-
+        
         train_data.min_conditioning_n_sample_frames = 0
         train_data.max_conditioning_n_sample_frames = 0
         
@@ -386,7 +421,6 @@ def main(
     else:
         train_dataset = VideoFolderDataset(**train_data, tokenizer=tokenizer, device=accelerator.device)
 
-    # Assuming train_dataset is already defined as you provided
     train_size = int(train_dataset_size * len(train_dataset))
     val_size = len(train_dataset) - train_size
 
@@ -427,19 +461,23 @@ def main(
     progress_bar = tqdm(range(global_step, num_update_steps_per_epoch * epochs))
     progress_bar.set_description("Steps")
 
-    def predict(batch):
+    def predict(batch, single_frame_conditioning):
         pixel_values = batch["pixel_values"]
         pixel_values = pixel_values.to(accelerator.device)
 
         latents = tensor_to_vae_latent(pixel_values, vae)
 
-        random_slice = random.randint(train_data.min_conditioning_n_sample_frames, train_data.max_conditioning_n_sample_frames)
-        
-        if random_slice > 0:
-            conditioning_hidden_states = latents[:, :, :random_slice, :, :]
-            latents = latents[:, :, random_slice:random_slice + train_data.n_max_frames, :, :]
+        if not train_data.train_only_images:
+            if single_frame_conditioning:
+                conditioning_latents = latents[:, :, :1, :, :]
+                latents = latents[:, :, 1:1 + train_data.n_max_frames, :, :]
+            else:
+                random_slice = random.randint(train_data.min_conditioning_n_sample_frames, train_data.max_conditioning_n_sample_frames)
+
+                conditioning_latents = latents[:, :, :random_slice, :, :]
+                latents = latents[:, :, random_slice:random_slice + train_data.n_max_frames, :, :]
         else:
-            conditioning_hidden_states = torch.randn(latents.shape, device=latents.device)
+            conditioning_latents = torch.randn(latents.shape, device=latents.device)
         
         noise = sample_noise(latents, offset_noise_strength, use_offset_noise)
         bsz = latents.shape[0]
@@ -448,22 +486,22 @@ def main(
         timesteps = timesteps.long()
 
         noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-
-        token_ids = batch['prompt_ids'].to(accelerator.device)
-        encoder_hidden_states = text_encoder(token_ids)[0].detach()  # Detach to avoid training the text encoder
         
+        token_ids = batch['prompt_ids'].to(accelerator.device)
+        encoder_hidden_states = text_encoder(token_ids)[0].detach()
+
         if noise_scheduler.prediction_type == "epsilon":
-            target = noise
+            noisy_target = noise
         elif noise_scheduler.prediction_type == "v_prediction":
-            target = noise_scheduler.get_velocity(latents, noise, timesteps)
+            noisy_target = noise_scheduler.get_velocity(latents, noise, timesteps)
         else:
             raise ValueError(f"Unknown prediction type {noise_scheduler.prediction_type}")
         
         noisy_latents.requires_grad = True
-        conditioning_hidden_states.requires_grad = True
+        conditioning_latents.requires_grad = True
         
-        model_pred = unet(noisy_latents, conditioning_hidden_states, timesteps, encoder_hidden_states=encoder_hidden_states).sample
-        loss = F.mse_loss(model_pred.float(), target.float(), reduction="mean")
+        noise_pred = unet(noisy_latents, conditioning_latents, timesteps, encoder_hidden_states=encoder_hidden_states).sample
+        loss = F.mse_loss(noise_pred.float(), noisy_target.float(), reduction="mean")
 
         return loss
     
@@ -475,10 +513,14 @@ def main(
                 continue
 
             with accelerator.accumulate(unet):
+                passes = 2 if not train_data.train_only_images else 1
+                losses = 0
+                
                 with accelerator.autocast():
-                    loss = predict(batch)
+                    for r in range(passes):
+                        losses += predict(batch, r == 0)
 
-                accelerator.backward(loss)
+                accelerator.backward(losses)
                 accelerator.clip_grad_norm_(unet.parameters(), 1.0)
 
                 optimizer.step()
@@ -487,7 +529,7 @@ def main(
                 optimizer.zero_grad(set_to_none=True)
 
                 if accelerator.is_local_main_process:
-                    wandb.log({'Training Loss': loss.item()}, step=global_step)
+                    wandb.log({'Training Loss': losses.item()}, step=global_step)
                     wandb.log({'Learning Rate': optimizer.param_groups[0]['lr']}, step=global_step)
 
                     progress_bar.update(1)
@@ -495,17 +537,17 @@ def main(
 
                     if should_save(global_step, checkpointing_steps):
                         save_pipe(
-                                pretrained_3d_model_path,
-                                global_step,
-                                unet,
-                                vae,
-                                text_encoder,
-                                tokenizer,
-                                noise_scheduler,
-                                output_dir,
-                                is_checkpoint=True,
-                                remove_older_checkpoints=False
-                            )
+                            pretrained_3d_model_path,
+                            global_step,
+                            unet,
+                            vae,
+                            text_encoder,
+                            tokenizer,
+                            noise_scheduler,
+                            output_dir,
+                            is_checkpoint=True,
+                            remove_older_checkpoints=False
+                        )
                             
                     if should_sample(global_step, sample_steps):
                         if gradient_checkpointing:
@@ -527,7 +569,7 @@ def main(
 
                             out_file = f"{output_dir}/samples/{save_filename}.mp4"
 
-                            conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt").images[0]
+                            conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt", generator=torch.Generator().manual_seed(seed)).images[0]
                             conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(sample_data.height, sample_data.width), mode='bilinear', align_corners=False).squeeze(0)
                             
                             img_file = f"{output_dir}/samples/{save_filename}.png"
@@ -536,27 +578,26 @@ def main(
                             conditioning_hidden_states = conditioning_hidden_states.unsqueeze(0).unsqueeze(2)
 
                             with torch.no_grad():
-                                if train_data.train_only_images:
-                                    image = pipeline(
-                                        prompt,
-                                        encode_to_latent=True,
-                                        width=sample_data.width,
-                                        height=sample_data.height,
-                                        conditioning_hidden_states=conditioning_hidden_states,
-                                        num_frames=1,
-                                        num_inference_steps=sample_data.num_inference_steps,
-                                        guidance_scale=sample_data.guidance_scale,
-                                        output_type="pt",
-                                        generator=torch.Generator().manual_seed(seed)
-                                    ).frames[:, :, 0, :, :]
+                                image = pipeline(
+                                    prompt=prompt,
+                                    encode_to_latent=True,
+                                    width=sample_data.width,
+                                    height=sample_data.height,
+                                    conditioning_hidden_states=conditioning_hidden_states,
+                                    num_frames=1,
+                                    num_inference_steps=sample_data.num_inference_steps,
+                                    guidance_scale=sample_data.guidance_scale,
+                                    output_type="pt",
+                                    generator=torch.Generator().manual_seed(seed)
+                                ).frames[:, :, 0, :, :]
 
-                                    img_file = f"{output_dir}/samples/{save_filename}-base.png"
-                                    tensor2img(image, file_name=img_file)
-
+                                img_file = f"{output_dir}/samples/{save_filename}-base.png"
+                                tensor2img(image, file_name=img_file)
+                                
                                 video_latents = []
                                 for t in range(0, sample_data.times):
                                     latents = pipeline(
-                                        prompt,
+                                        prompt=prompt,
                                         encode_to_latent=True if t == 0 else False,
                                         width=sample_data.width,
                                         height=sample_data.height,
@@ -581,6 +622,9 @@ def main(
                             video_frames = rearrange(video_frames, "c f h w -> f h w c").clamp(-1, 1).add(1).mul(127.5)
                             video_frames = video_frames.byte().cpu().numpy()
 
+                            #video_frames = average_contrast(video_frames)
+                            video_frames = enhance_contrast_clahe_4d(video_frames)
+
                             export_to_video(video_frames, out_file, sample_data.fps)
 
                             try:
@@ -588,8 +632,8 @@ def main(
                                 os.remove(out_file)
                             except:
                                 pass
-                                
                             del pipeline, video_frames
+                            
                             torch.cuda.empty_cache()
                             
                         if gradient_checkpointing:
@@ -605,11 +649,15 @@ def main(
                         unet.eval()
 
                         total_val_loss = 0.0
+
                         with accelerator.autocast():
                             with torch.no_grad():
                                 for val_batch in val_dataloader:
-                                    val_loss = predict(val_batch)
-                                    total_val_loss += val_loss.item()
+                                    val_losses = 0
+
+                                    for r in range(passes):
+                                        val_losses += predict(val_batch, r == 0)
+                                    total_val_loss += val_losses.item()
 
                                     validation_progress_bar.update(1)
 

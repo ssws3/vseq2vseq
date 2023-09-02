@@ -40,6 +40,45 @@ from diffusers.models.attention import BasicTransformerBlock
 from diffusers.models.attention_processor import AttnProcessor2_0
 from torch.nn.functional import cosine_similarity
 
+def average_contrast(video):
+    num_frames = video.shape[0]
+    avg_contrast = 0
+
+    # Step 1: Calculate average contrast over all frames
+    for f in range(num_frames):
+        frame = cv2.cvtColor(video[f], cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+        avg_contrast += frame.std()
+
+    avg_contrast /= num_frames
+
+    # Step 2: Adjust contrast for each frame to match the average
+    output_video = np.zeros_like(video)
+    for f in range(num_frames):
+        frame = video[f]
+        gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        current_contrast = gray_frame.std()
+        
+        alpha = avg_contrast / (current_contrast + 1e-6)  # Avoid division by zero
+        adjusted_frame = cv2.convertScaleAbs(frame, alpha=alpha, beta=0)
+        
+        output_video[f] = adjusted_frame
+
+    return output_video
+
+def enhance_contrast_clahe_4d(tensor, clip_limit=1.2, tile_grid_size=(1,1), gamma=0.98):
+    clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
+    
+    output = np.empty_like(tensor)
+
+    for f in range(tensor.shape[0]):
+        for c in range(tensor.shape[3]):
+            enhanced_frame = clahe.apply(tensor[f, :, :, c])
+            enhanced_frame = np.power(enhanced_frame, gamma)
+            enhanced_frame = np.clip(enhanced_frame, 0, 255)
+            output[f, :, :, c] = enhanced_frame
+
+    return output
+
 def set_seed(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -195,15 +234,13 @@ def create_output_folders(output_dir, config):
 
     return out_dir
 
-def load_primary_models(pretrained_model_path, upgrade_model=False, convert_model=False, loaders=None):
+def load_primary_models(pretrained_model_path, upgrade_model=False, loaders=None):
     noise_scheduler = DDIMScheduler.from_pretrained(pretrained_model_path, subfolder="scheduler")
     tokenizer = CLIPTokenizer.from_pretrained(pretrained_model_path, subfolder="tokenizer")
     text_encoder = CLIPTextModel.from_pretrained(pretrained_model_path, subfolder="text_encoder")
     vae = AutoencoderKL.from_pretrained(pretrained_model_path, subfolder="vae")
     if upgrade_model:
         unet = UNet3DConditionModel.from_pretrained_3d(pretrained_model_path, loaders, subfolder="unet")
-    elif convert_model:
-        unet = UNet3DConditionModel.convert(pretrained_model_path, loaders, subfolder="unet")
     else:
         unet = UNet3DConditionModel.from_pretrained(pretrained_model_path, subfolder="unet")
 
@@ -292,7 +329,6 @@ def main(
     pretrained_3d_model_path: str,
     pretrained_2d_model_path: str,
     upgrade_model: bool,
-    convert_model: bool,
     loaders: Dict,
     output_dir: str,
     train_data: Dict,
@@ -332,7 +368,6 @@ def main(
                 "weight_decay": data['optimizer']['params']['weight_decay'],
                 "gradient_accumulation_steps": data['gradient_accumulation_steps'],
                 "train_micro_batch_size_per_gpu": data['train_micro_batch_size_per_gpu'],
-                "train_batch_size": data['train_batch_size'],
                 "trainable_modules": ",".join(train_data.trainable_modules),
                 "resolution": f"{train_data.width}x{train_data.height}",
                 "frame_step": train_data.frame_step,
@@ -343,7 +378,7 @@ def main(
         
         output_dir = create_output_folders(output_dir, config)
         
-    noise_scheduler, tokenizer, text_encoder, vae, unet = load_primary_models(pretrained_3d_model_path, upgrade_model, convert_model, loaders)
+    noise_scheduler, tokenizer, text_encoder, vae, unet = load_primary_models(pretrained_3d_model_path, upgrade_model, loaders)
 
     unet_engine, _, _, _ = deepspeed.initialize(
         model=unet,
@@ -503,7 +538,7 @@ def main(
 
                         out_file = f"{output_dir}/samples/{save_filename}.mp4"
 
-                        conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, output_type="pt").images[0]
+                        conditioning_hidden_states = pipe(prompt, width=sample_data.image_width, height=sample_data.image_height, generator=torch.Generator().manual_seed(seed), output_type="pt").images[0]
                         conditioning_hidden_states = F.interpolate(conditioning_hidden_states.unsqueeze(0), size=(sample_data.height, sample_data.width), mode='bilinear', align_corners=False).squeeze(0)
                         
                         img_file = f"{output_dir}/samples/{save_filename}.png"
@@ -512,24 +547,21 @@ def main(
                         conditioning_hidden_states = conditioning_hidden_states.unsqueeze(0).unsqueeze(2)
 
                         with torch.no_grad():
-                            if train_data.train_only_images:
-                                image = pipeline(
-                                    prompt,
-                                    width=sample_data.width,
-                                    height=sample_data.height,
-                                    conditioning_hidden_states=None,
-                                    num_frames=1,
-                                    num_inference_steps=sample_data.num_inference_steps,
-                                    guidance_scale=sample_data.guidance_scale,
-                                    output_type="pt",
-                                    generator=torch.Generator().manual_seed(seed)
-                                ).frames[:, :, 0, :, :]
+                            image = pipeline(
+                                prompt,
+                                width=sample_data.width,
+                                height=sample_data.height,
+                                conditioning_hidden_states=None,
+                                num_frames=1,
+                                num_inference_steps=sample_data.num_inference_steps,
+                                guidance_scale=sample_data.guidance_scale,
+                                output_type="pt",
+                                generator=torch.Generator().manual_seed(seed)
+                            ).frames[:, :, 0, :, :]
 
-                                conditioning_hidden_states = image.unsqueeze(2)
-                                img_file = f"{output_dir}/samples/{save_filename}-base.png"
-                                tensor2img(image, file_name=img_file)
-
-                                del image
+                            conditioning_hidden_states = image.unsqueeze(2)
+                            img_file = f"{output_dir}/samples/{save_filename}-base.png"
+                            tensor2img(image, file_name=img_file)
 
                             video_latents = []
                             for t in range(0, sample_data.times):
@@ -559,6 +591,9 @@ def main(
                         video_frames = rearrange(video_frames, "c f h w -> f h w c").clamp(-1, 1).add(1).mul(127.5)
                         video_frames = video_frames.byte().cpu().numpy()
 
+                        #video_frames = average_contrast(video_frames)
+                        video_frames = enhance_contrast_clahe_4d(video_frames)
+                        
                         export_to_video(video_frames, out_file, sample_data.fps)
 
                         try:

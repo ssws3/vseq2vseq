@@ -26,7 +26,7 @@ from diffusers.models.embeddings import TimestepEmbedding, Timesteps
 from diffusers.models.modeling_utils import ModelMixin
 from diffusers.utils import WEIGHTS_NAME
 from .transformers import TransformerTemporalModel, TransformerTemporalConditioningModel, TransformerConditioningModel
-from .resnet import Conditioner
+from .resnet import Conditioner, ConditioningBlock
 from .unet_blocks import (
     CrossAttnDownBlock3D,
     CrossAttnUpBlock3D,
@@ -147,16 +147,13 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             act_fn=act_fn,
         )
 
-        self.conditioning_transformer_in = None
-        if use_conditioning_in_transformers:
-            if use_conditioning_transformer:
-                self.conditioning_transformer_in = TransformerConditioningModel(
-                    num_attention_heads=8,
-                    attention_head_dim=attention_head_dim,
-                    in_channels=block_out_channels[0],
-                    num_layers=1,
-                    only_cross_attention=True
-                )
+        self.conditioning_time_embedding = TimestepEmbedding(
+            timestep_input_dim,
+            time_embed_dim,
+            act_fn=act_fn,
+        )
+
+        self.conditioning_in = ConditioningBlock(timestep_input_dim)
 
         self.transformer_in = TransformerTemporalModel(
             num_attention_heads=8,
@@ -164,17 +161,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
             in_channels=block_out_channels[0],
             num_layers=1,
         )
-
-        self.temp_conditioning_transformer_in = None
-        if use_conditioning_in_transformers:
-            if use_temp_conditioning_transformer:
-                self.temp_conditioning_transformer_in = TransformerTemporalConditioningModel(
-                    num_attention_heads=8,
-                    attention_head_dim=attention_head_dim,
-                    in_channels=block_out_channels[0],
-                    num_layers=1,
-                    only_cross_attention=True
-                )
 
         # class embedding
         self.down_blocks = nn.ModuleList([])
@@ -424,15 +410,19 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         # there might be better ways to encapsulate this.
         t_emb = t_emb.to(dtype=self.dtype)
 
-        emb = self.time_embedding(t_emb, timestep_cond)
-        h_emb = emb.repeat_interleave(repeats=num_frames, dim=0)
-        c_emb = emb.repeat_interleave(repeats=num_frames_c, dim=0)
+        h_emb = self.time_embedding(t_emb, timestep_cond)
+        h_emb = h_emb.repeat_interleave(repeats=num_frames, dim=0)
+
+        c_emb = self.conditioning_time_embedding(t_emb, timestep_cond)
+        c_emb = c_emb.repeat_interleave(repeats=num_frames_c, dim=0)
         
         if encoder_hidden_states is not None:
             encoder_hidden_states = encoder_hidden_states.repeat_interleave(repeats=num_frames, dim=0)
         # 2. pre-process
         sample = sample.permute(0, 2, 1, 3, 4).reshape((sample.shape[0] * num_frames, -1) + sample.shape[3:])
         conditioning_hidden_states = conditioning_hidden_states.permute(0, 2, 1, 3, 4).reshape((conditioning_hidden_states.shape[0] * num_frames_c, -1) + conditioning_hidden_states.shape[3:])
+
+        sample = self.conditioning_in(sample, conditioning_hidden_states, t_emb, num_frames, num_frames_c) if num_frames > 1 else sample
         sample, conditioning_hidden_states = self.conv_in(sample, conditioning_hidden_states=conditioning_hidden_states, num_frames=num_frames)
         
         if self.gradient_checkpointing:
@@ -445,22 +435,10 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
 
                     return custom_forward
             
-            if self.conditioning_transformer_in:
-                sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.conditioning_transformer_in, return_dict=False), sample, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else sample
-
             sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.transformer_in, return_dict=False), sample, num_frames)[0] if num_frames > 1 else sample
-
-            if self.temp_conditioning_transformer_in:
-                sample = torch.utils.checkpoint.checkpoint(create_custom_forward(self.temp_conditioning_transformer_in, return_dict=False), sample, conditioning_hidden_states, num_frames)[0] if num_frames > 1 else sample
         else:
-            if self.conditioning_transformer_in:
-                sample = self.conditioning_transformer_in(sample, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else sample
-
             sample = self.transformer_in(sample, num_frames=num_frames).sample if num_frames > 1 else sample
-
-            if self.temp_conditioning_transformer_in:
-                sample = self.temp_conditioning_transformer_in(sample, conditioning_hidden_states, num_frames=num_frames).sample if num_frames > 1 else sample
-
+            
         # 3. down
         down_block_res_samples = (sample,)
         down_block_res_conditioning_hidden_states = (conditioning_hidden_states,)
@@ -562,7 +540,7 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
         if subfolder is not None:
             pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
 
-        model_3d = UNet3DConditionModel(use_conditioning_norm=loaders.use_conditioning_norm, use_conditioning_transformer=loaders.use_conditioning_transformer, use_temp_conditioning_transformer=loaders.use_temp_conditioning_transformer, use_conditioning_in_transformers=loaders.use_conditioning_in_transformers)
+        model_3d = UNet3DConditionModel(use_conditioning_transformer=loaders.use_conditioning_transformer, use_temp_conditioning_transformer=loaders.use_temp_conditioning_transformer)
 
         model_3d_old = os.path.join(pretrained_model_path, WEIGHTS_NAME)
         model_3d_old_state_dict = torch.load(model_3d_old, map_location="cpu")
@@ -572,25 +550,6 @@ class UNet3DConditionModel(ModelMixin, ConfigMixin):
                 new_k = k.replace('spatial_conv.','')
                 if new_k in model_3d_old_state_dict:
                     model_3d_old_state_dict[k] = model_3d_old_state_dict.pop(new_k)
-
-        model_3d.load_state_dict(model_3d_old_state_dict, strict=False)
-
-        return model_3d
-    
-    @classmethod
-    def convert(cls, pretrained_model_path, loaders, subfolder=None):
-        if subfolder is not None:
-            pretrained_model_path = os.path.join(pretrained_model_path, subfolder)
-
-        model_3d = UNet3DConditionModel(use_conditioning_norm=loaders.use_conditioning_norm, use_conditioning_transformer=loaders.use_conditioning_transformer, use_temp_conditioning_transformer=loaders.use_temp_conditioning_transformer, use_conditioning_in_transformers=loaders.use_conditioning_in_transformers)
-
-        model_3d_old = os.path.join(pretrained_model_path, WEIGHTS_NAME)
-        model_3d_old_state_dict = torch.load(model_3d_old, map_location="cpu")
-
-        for k, v in model_3d.state_dict().items():
-            if 'temp_conditioning_attentions' in k:
-                new_k = k.replace('temp_conditioning_attentions','conditioning_attentions')
-                model_3d_old_state_dict[k] = model_3d_old_state_dict.pop(new_k)
 
         model_3d.load_state_dict(model_3d_old_state_dict, strict=False)
 

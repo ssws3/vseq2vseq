@@ -10,78 +10,49 @@ class Conditioner(nn.Module):
 
         self.spatial_conv = nn.Conv2d(dim, dim_out, kernel_size, **kwargs)
         self.conditioning_conv = nn.Conv2d(dim, dim_out, kernel_size, **kwargs)
-
-        self.conditioning_block = ConditioningBlock(dim_out) if use_conditioning_norm else None
         
     def forward(self, hidden_states, conditioning_hidden_states, num_frames):        
         hidden_states = self.spatial_conv(hidden_states)
-
         conditioning_hidden_states = self.conditioning_conv(conditioning_hidden_states)
 
-        if self.conditioning_block: 
-            hidden_states = self.conditioning_block(hidden_states, conditioning_hidden_states, num_frames) if num_frames > 1 else hidden_states
-
         return hidden_states, conditioning_hidden_states
-    
-class ConditionalNorm(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-
-        self.gamma = nn.Sequential(
-            nn.Linear(dim, dim), 
-            nn.SiLU()
-        )
-        self.beta = nn.Sequential(
-            nn.Linear(dim, dim), 
-            nn.SiLU()
-        )
-
-        # Zero initialization
-        nn.init.zeros_(self.gamma[0].weight)
-        nn.init.ones_(self.gamma[0].bias)
-        
-        nn.init.zeros_(self.beta[0].weight)
-        nn.init.zeros_(self.beta[0].bias)
-
-    def forward(self, x, y):
-        batch, channel, frames, height, width = y.shape
-
-        y = rearrange(y, "b c f h w -> (b f) (h w) c")
-
-        gamma = self.gamma(y)
-        beta = self.beta(y)
-
-        gamma = rearrange(gamma, "(b f) (h w) c -> b c f h w", b=batch, c=channel, f=frames, h=height, w=width)
-        beta = rearrange(beta, "(b f) (h w) c -> b c f h w", b=batch, c=channel, f=frames, h=height, w=width)
-
-        return gamma * x + beta
     
 class ConditioningBlock(nn.Module):
     def __init__(self, dim):
         super().__init__()
 
-        self.conditioning_norm = ConditionalNorm(dim)
+        self.gamma = nn.Sequential(
+            nn.Linear(dim, 4), 
+            nn.SiLU()
+        )
+        self.beta = nn.Sequential(
+            nn.Linear(dim, 4), 
+            nn.SiLU()
+        )
 
-    def forward(self, hidden_states, conditioning_hidden_states, num_frames=1):
-        batch_frames_h, _, _, _ = hidden_states.shape
-        batch_frames_c, _, _, _ = conditioning_hidden_states.shape
-
-        batch_h = batch_frames_h // num_frames
-        hidden_states = rearrange(hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames)
-
-        num_frames_c = batch_frames_c // batch_h
-        conditioning_hidden_states = rearrange(conditioning_hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames_c)
-
+    def forward(self, hidden_states, conditioning_hidden_states, t_emb, num_frames=1, num_frames_c=1):
         identity = hidden_states
 
-        init_conditioning_hidden_states = conditioning_hidden_states[:, :, -1, :, :].unsqueeze(2).repeat(1, 1, num_frames, 1, 1)
+        batch_frames_h, _, _, _ = hidden_states.shape
+        batch_h = batch_frames_h // num_frames
 
-        hidden_states = self.conditioning_norm(init_conditioning_hidden_states, hidden_states)
+        conditioning_hidden_states = rearrange(conditioning_hidden_states, '(b f) c h w -> b c f h w', b=batch_h, f=num_frames_c)
+        conditioning_hidden_states = conditioning_hidden_states[:, :, -1, :, :].unsqueeze(2).repeat(1, 1, num_frames, 1, 1)
+        conditioning_hidden_states = rearrange(conditioning_hidden_states, "b c f h w -> (b f) c h w")
+        
+        beta = self.beta(t_emb)[:, :, None, None]
+        gamma = self.gamma(t_emb)[:, :, None, None]
+        
+        beta = beta.repeat_interleave(repeats=num_frames, dim=0)
+        gamma = gamma.repeat_interleave(repeats=num_frames, dim=0)
+        
+        conditioned_hidden_states = conditioning_hidden_states * gamma
+        hidden_states = hidden_states + beta
+        
+        hidden_states = conditioned_hidden_states + hidden_states
 
         hidden_states = identity + hidden_states
         
-        hidden_states = rearrange(hidden_states, "b c f h w -> (b f) c h w")
-
         return hidden_states
 
 class TemporalBlock(nn.Module):
@@ -292,7 +263,7 @@ class ResnetBlock2D(nn.Module):
         c_emb = self.time_c_emb_proj(c_emb)[:, :, None, None]
 
         hidden_states = hidden_states + h_emb
-        conditioning_hidden_states = conditioning_hidden_states + c_emb
+        conditioning_hidden_states = conditioning_hidden_states * c_emb
 
         hidden_states = self.norm2(hidden_states)
         hidden_states = self.silu2(hidden_states)
